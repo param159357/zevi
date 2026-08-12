@@ -20,14 +20,22 @@ npm run lint     # eslint
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
-npx supabase gen types typescript --project-id vsqqrbodwrvjuclqhean \
-  > src/types/database.types.ts   # regenerate after every schema change
+npx supabase gen types typescript --project-id vsqqrbodwrvjuclqhean > src/types/database.types.ts
 ```
 
-Regenerate types **from Git Bash, not PowerShell** — PowerShell's `>` writes
-UTF-16LE with CRLF, which fights `.gitattributes` and produces an unreadable
-diff. If it happens anyway:
-`iconv -f UTF-16 -t UTF-8 file | tr -d '\r' > file.new`.
+**The terminal here is PowerShell** (Windows PowerShell 5.1). Chain commands with
+`;`, never `&&` or `||` — those are parser errors, not just unsupported. No
+`head`, `tail`, `which` or `touch` either: use `Select-Object -First` / `-Last`,
+`Get-Command`, `New-Item`.
+
+One exception, and it matters: **regenerate the Supabase types from Git Bash.**
+PowerShell's `>` writes UTF-16LE with CRLF, which fights `.gitattributes` and
+turns a 5,000-line generated file into an unreadable diff. If it happens anyway:
+
+```bash
+iconv -f UTF-16 -t UTF-8 src/types/database.types.ts | tr -d '\r' > /tmp/t
+cp /tmp/t src/types/database.types.ts
+```
 
 Copy `.env.example` to `.env.local` before the first run. The app throws a named
 error on a missing variable rather than failing obscurely.
