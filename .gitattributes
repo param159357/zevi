@@ -1,0 +1,31 @@
+# Line endings are LF in the repository and in every working tree, regardless
+# of platform. Without this, Windows checkouts convert to CRLF and diffs show
+# whole files as changed on macOS/Linux.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF or they break.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never run line-ending conversion on binaries — it corrupts them.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.avif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.mp4 binary
+*.mov binary
+*.webm binary
+*.zip binary
+*.gz binary
+
+# Collapse lockfile noise in diffs and reviews.
+package-lock.json -diff linguist-generated
