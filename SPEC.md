@@ -294,17 +294,41 @@ Single super-admin at launch, but **build roles now** — support staff who see 
 
 **Descending by design:** 11% on a ₹10,000 job is exactly the number that makes two people swap phone numbers. Dropping to 8% removes the incentive where leakage hurts most.
 
-**₹25 floor applies after all discounts.**
+**₹25 floor applies after all discounts**, and it **splits in the same
+client:worker ratio as the slab it lands in** — 7:6 at the bottom slab, so ₹13.46
+from the client and ₹11.54 from the worker. The floor never lands wholly on one
+side; the client still pays the larger share of it.
 
 ### Worked examples
 
-| Job | Client pays | Worker gets | Zevi gross | Zevi net |
-|---|---|---|---|---|
-| ₹149 | ₹159 | ₹140 | ₹25 | ~₹21 |
-| ₹400 | ₹428 | ₹376 | ₹52 | ~₹41 |
-| ₹500 | ₹530 | ₹475 | ₹55 | ~₹42 |
-| ₹2,000 | ₹2,100 | ₹1,920 | ₹180 | ~₹129 |
-| ₹10,000 | ₹10,450 | ₹9,650 | ₹800 | ~₹552 |
+Commission is charged to both sides at the slab rates. **GST is added on top of
+each commission share as its own line** — it is collected, not earned, and never
+counted as revenue. Zevi net assumes a 2% gateway fee plus GST on that fee
+(≈2.36% of what the client actually pays).
+
+| Job | Client pays | Worker gets | Zevi gross | GST collected | Zevi net |
+|---|---|---|---|---|---|
+| ₹149 | ₹164.88 | ₹135.38 | ₹25 | ₹4.50 | ~₹21 |
+| ₹400 | ₹433.04 | ₹371.68 | ₹52 | ₹9.36 | ~₹41 |
+| ₹500 | ₹535.40 | ₹470.50 | ₹55 | ₹9.90 | ~₹42 |
+| ₹2,000 | ₹2,118.00 | ₹1,905.60 | ₹180 | ₹32.40 | ~₹130 |
+| ₹10,000 | ₹10,531.00 | ₹9,587.00 | ₹800 | ₹144.00 | ~₹551 |
+
+**The ₹149 job, line by line** — the only case where the floor bites:
+
+| Line | Amount |
+|---|---|
+| Job budget | ₹149.00 |
+| Client commission (7/13 of the ₹25 floor) | ₹13.46 |
+| GST on client commission | ₹2.42 |
+| **Client pays** | **₹164.88** |
+| Worker commission (6/13 of the ₹25 floor) | ₹11.54 |
+| GST on worker commission | ₹2.08 |
+| **Worker receives** | **₹135.38** |
+| Zevi gross commission | ₹25.00 |
+
+Raw commission at 13% would be ₹19.37, so the floor lifts it to ₹25 — and the
+lift is apportioned 7:6, not charged to whichever side is easier to charge.
 
 ### Other fees
 - **Cancellation: ₹15 flat** (actual gateway cost above ₹2,000). Never charged when no worker opted in — that's Zevi's failure, not the client's.
@@ -327,7 +351,11 @@ Single super-admin at launch, but **build roles now** — support staff who see 
 Top-tier workers (4.5+, 25+ jobs, zero abandonments): **1% off at every slab**, stacking to the 2% cap.
 
 ### GST
-18% on commission from both sides, shown as a separate line. **Built as a configurable line item** — rates confirmed with a CA before launch.
+18% on commission from both sides, **added on top of the commission as a separate
+line, never folded into it** — the worked examples above include it. GST collected
+is a liability owed to the government, not revenue: it appears in the escrow and
+invoice lines but never in the Zevi net column. **Built as a configurable line
+item** — rates confirmed with a CA before launch.
 
 ---
 
@@ -337,11 +365,14 @@ Top-tier workers (4.5+, 25+ jobs, zero abandonments): **1% off at every slab**, 
 
 | | Amount |
 |---|---|
-| Commission (50 × ₹52) | ₹2,600 |
+| Commission (50 × ₹52, ex-GST) | ₹2,600 |
 | Cancellation fees (10 × ₹15) | ₹150 |
-| Razorpay (60 assigned jobs only) | −₹606 |
+| Razorpay (60 assigned jobs only, on the GST-inclusive charge) | −₹613 |
 | Payouts | −₹50 |
-| **Net per 100 visitors** | **≈ ₹2,050** |
+| **Net per 100 visitors** | **≈ ₹2,080** |
+
+*GST does not appear here: it is collected from both sides and paid onward, so it
+nets to zero in this table.*
 
 | Visitors/month | Completed | Net after infra |
 |---|---|---|

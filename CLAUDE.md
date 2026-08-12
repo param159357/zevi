@@ -3,8 +3,10 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: setup only.** No features exist yet. The app scaffold, Supabase
-clients, and folder structure are in place — everything else is unbuilt.
+**Status: schema applied, no features yet.** The app scaffold, Supabase clients,
+folder structure and the full database schema are in place and pushed. No UI, no
+server actions, no route handlers. R2, Razorpay, SES and Sentry are all still
+unwired.
 
 ---
 
@@ -16,7 +18,16 @@ npm run build    # production build
 npm run start    # serve the production build
 npm run lint     # eslint
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
+
+npx supabase db push   # apply new migrations to the linked project
+npx supabase gen types typescript --project-id vsqqrbodwrvjuclqhean \
+  > src/types/database.types.ts   # regenerate after every schema change
 ```
+
+Regenerate types **from Git Bash, not PowerShell** — PowerShell's `>` writes
+UTF-16LE with CRLF, which fights `.gitattributes` and produces an unreadable
+diff. If it happens anyway:
+`iconv -f UTF-16 -t UTF-8 file | tr -d '\r' > file.new`.
 
 Copy `.env.example` to `.env.local` before the first run. The app throws a named
 error on a missing variable rather than failing obscurely.
@@ -114,6 +125,41 @@ Rules:
 - Job assignment takes a database-level lock. Double-assignment is the one race
   that costs real money.
 
+### Schema
+
+19 migrations, 81 tables, RLS on every one. What to know before writing a query:
+
+- **`profiles` is PII and no policy exposes it to another user.** What others may
+  see lives in `public_profiles` (a trigger-maintained projection),
+  `worker_profiles` and `client_profiles`. Private counters live in
+  `worker_state` and `user_private_stats` — dispute rate and risk score are
+  admin-only *by table*, not by remembering to trim a SELECT list.
+- **Chat splits the same way.** `messages` holds the redacted body both
+  participants read; `message_raw` holds the original, admins only.
+- **Money is an append-only ledger.** `ledger_transactions` + `ledger_entries`,
+  balanced by a deferred constraint trigger. Read balances from
+  `ledger_account_balances`. Never add a balance column.
+- **Rates are versioned data**: `commission_slabs`, `tax_rates`, `fee_schedule`,
+  each with an effective window and an exclusion constraint against overlap.
+  Insert a new row to change a rate; never UPDATE one in place.
+  `job_financials` freezes a job's price at assignment and cannot be updated.
+- **Assignment goes through `claim_job_assignment()`**, which takes
+  `SELECT … FOR UPDATE` on the job row. Never INSERT `job_assignments` directly.
+- **Append-only, enforced by trigger**: `admin_audit_log`, `job_events`,
+  `ledger_*`, `job_financials`. UPDATE and DELETE raise.
+- **Tunables live in `platform_settings`**, read via `setting_int()` /
+  `setting_bigint()` / `setting_bool()`. Slabs, tax and fees do not — see above.
+- Policy helpers: `is_admin()`, `admin_can(perm)`, `is_active_worker()`,
+  `is_job_participant()`, `is_job_client()`, `worker_works_in_category()`,
+  `is_conversation_participant()`, `is_dispute_party()`. Call them as
+  `(select public.is_admin())` inside a policy so Postgres evaluates once per
+  statement rather than once per row.
+
+Money-moving writes — acceptance, escrow release, payouts, dispute decisions —
+have INSERT/UPDATE revoked from `authenticated` at the table level. They run
+server-side with the service-role client, in the same transaction as their
+ledger entries. That is not a workaround for a missing policy; it is the policy.
+
 ---
 
 ## Money
@@ -127,7 +173,13 @@ Rules:
   the job record before charging or paying anyone.
 - Fees, commission, and GST are always separate visible lines, never folded into
   a total. The spec is explicit about this and it's also a legal requirement.
-- GST is a configurable line item, not a hardcoded 18%.
+- GST is a configurable line item, not a hardcoded 18%. It is **added on top of
+  each commission share**, never folded into it, and it is a liability — it must
+  never appear in a revenue figure.
+- **The ₹25 floor splits in the slab's own client:worker ratio** — 7:6 at the
+  bottom slab, so ₹13.46 from the client and ₹11.54 from the worker. Round one
+  side and give the remainder to the other so the two shares sum to exactly the
+  floor. See SPEC.md §8 for the worked ₹149 job.
 
 ---
 
