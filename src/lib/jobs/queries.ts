@@ -108,6 +108,9 @@ export type ClientJobSummary = {
   optInCount: number;
   categoryName: string | null;
   postedAsOther: boolean;
+  /** Set once someone is on it — which is what turns "who's interested" into
+   *  "who you picked" on the shortlist link. */
+  assignedWorkerId: string | null;
 };
 
 /** The dashboard list. Drafts first — they are the ones needing a decision. */
@@ -119,7 +122,7 @@ export async function loadClientJobs(
   const { data, error } = await supabase
     .from("jobs")
     .select(
-      "id, title, status, budget_paise, deadline_at, updated_at, opt_in_count, posted_as_other, categories (name)",
+      "id, title, status, budget_paise, deadline_at, updated_at, opt_in_count, posted_as_other, assigned_worker_id, categories (name)",
     )
     .eq("client_id", clientId)
     .order("updated_at", { ascending: false })
@@ -137,5 +140,6 @@ export async function loadClientJobs(
     optInCount: job.opt_in_count,
     categoryName: job.categories?.name ?? null,
     postedAsOther: job.posted_as_other,
+    assignedWorkerId: job.assigned_worker_id,
   }));
 }

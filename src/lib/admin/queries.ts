@@ -16,7 +16,8 @@ import {
   isImageSample,
   reverseImageSearchUrl,
 } from "@/lib/constants/workers";
-import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
+import { createClient } from "@/lib/supabase/server";
+import { signStorageObjects } from "@/lib/uploads/sign";
 import type { ApplicationReview, ApprovalQueueRow, ReviewSample } from "@/lib/admin/types";
 
 type ServerSupabaseClient = Awaited<ReturnType<typeof createClient>>;
@@ -144,7 +145,14 @@ export async function loadApplicationForReview(
       : [],
   );
 
-  const signed = await signSamples(rows.map((sample) => sample.files.storage_key));
+  // Signed for someone who does not own the objects: the storage policy is
+  // anchored on the owner and a reviewer is not it. `requireAdmin` has already
+  // run in the page above, which is what makes this allowed.
+  const signed = await signStorageObjects(
+    SAMPLE_BUCKET,
+    rows.map((sample) => sample.files.storage_key),
+    REVIEW_URL_TTL_SECONDS,
+  );
 
   const previews = new Map<string, ReviewSample>();
   for (const sample of rows) {
@@ -197,29 +205,4 @@ export async function loadApplicationForReview(
           }),
       })),
   };
-}
-
-/** Signed previews for someone who does not own the objects. Service-role, and
- *  only ever called from a module the admin guard has already run in. */
-async function signSamples(storageKeys: string[]): Promise<Map<string, string>> {
-  const urls = new Map<string, string>();
-  if (storageKeys.length === 0) return urls;
-
-  const admin = createServiceRoleClient();
-  const { data, error } = await admin.storage
-    .from(SAMPLE_BUCKET)
-    .createSignedUrls(storageKeys, REVIEW_URL_TTL_SECONDS);
-
-  if (error) {
-    // A review can still be done from the captions and the file names, so this
-    // degrades rather than throwing the whole screen away.
-    console.error(`[admin] could not sign samples: ${error.message}`);
-    return urls;
-  }
-
-  for (const entry of data ?? []) {
-    if (entry.signedUrl && entry.path) urls.set(entry.path, entry.signedUrl);
-  }
-
-  return urls;
 }

@@ -102,6 +102,10 @@ export const JOB_ROUTES = {
   post: "/post",
   dashboard: "/dashboard",
   edit: (jobId: string) => `/post/${jobId}`,
+  /** Who opted in, and the pick (spec §5). Its own segment rather than a child
+   *  of `/post/:id`, which is the *draft* — the two are different screens about
+   *  the same job at different points in its life. */
+  shortlist: (jobId: string) => `/shortlist/${jobId}`,
 } as const;
 
 /** Statuses whose brief a client may still change (spec §5). */

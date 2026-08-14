@@ -3,7 +3,7 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, auth built, clients post jobs, workers apply and opt in.**
+**Status: schema applied, auth built, jobs posted, opted into, and assigned.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
@@ -11,8 +11,12 @@ category tiles, brief, attachments, budget and deadline, autosaved as a draft an
 published through `publish_job()`. A worker can add 3–6 samples per category with
 captions and submit them, and an admin can approve, flag or reject from the
 console queue. An approved worker sees the category-filtered feed, reads a brief
-and opts in with the three short fields. Nothing beyond that: no shortlist, no
-payment, no delivery, no KYC. Razorpay, SES, Sentry and SMS are still unwired,
+and opts in with the three short fields. The client reads that list, sorted by
+rating, with each worker's samples beside their three answers, and picks one
+through `claim_job_assignment()`. Nothing beyond that: no delivery, no chat, no
+ratings, no KYC. **Selection takes no money** — Razorpay is unwired, so a job is
+assigned with a null `payment_id` and no escrow behind it, which is the one place
+the build knowingly diverges from spec §4. SES, Sentry and SMS are unwired too,
 and uploads sit in Supabase Storage until R2 replaces it.
 
 ---
@@ -91,10 +95,10 @@ src/
 │   ├── auth/            session.ts (who is signed in) · actions.ts · types.ts
 │   ├── jobs/            actions.ts · queries.ts · validation.ts · types.ts
 │   ├── workers/         samples and the application: actions · queries · types
-│   ├── matching/        the feed and opt-ins: actions · queries · validation · types
+│   ├── matching/        feed, opt-ins, shortlist: actions · queries · shortlist · validation · types
 │   ├── admin/           console guard + approval queue: session · actions · queries
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
-│   ├── uploads/         client.ts — browser-side hashing and object naming
+│   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
 │   ├── utils/           pure helpers only
@@ -334,9 +338,54 @@ Spec §6's second half, and the first screen an approved worker uses every day.
 - Withdrawal is offered on an `active` opt-in only. The policy allows it while
   shortlisted too, but a worker vanishing from a list a client is mid-decision on
   is a behaviour spec §6 has penalties for and no rule about — so it waits for one.
-- Not built yet: the shortlist, and therefore anything that reads `rank_score`.
-  A worker cannot see a job's attachments before assignment either —
+- A worker cannot see a job's attachments before assignment —
   `job_attachments` follows `is_job_participant`, deliberately.
+
+---
+
+## The shortlist and picking
+
+Spec §5's other half, and the moment the job stops being a posting.
+
+- **There is no shortlist algorithm, and that is the spec's own decision.** §5
+  describes five slots — one top-rated, three AI-ranked, one newest — and §16
+  cuts it in one line: "AI ranking of middle 3 → show all opted-in workers
+  sorted by rating." So `/shortlist/[jobId]` lists *every* opted-in worker, best
+  first, and nothing is written to `job_shortlists` / `job_shortlist_entries`.
+  Those tables record which five a client was shown and why, which is evidence
+  worth keeping the day there is a ranking to record and noise before it.
+  `rank_score`, `note_score` and the `shortlist_slot` enum stay unread.
+- **The sort key is the rating in *this job's* category.** §6 keeps ratings
+  per (worker, category) so 4.9 at decks and 3.2 at video never blend, so
+  `worker_category_stats` wins and `worker_profiles.rating` is the fallback —
+  labelled either way, because the two say different things. Under it: jobs
+  completed, then the opt-in's own timestamp, so at launch (every rating null)
+  the list is still ordered by something a client can act on.
+- **A client never touches `profiles`.** The name is `public_profiles.display_name`
+  — a first name, not the legal name on the ID — and the stats come from
+  `worker_profiles` and `worker_category_stats`, the tables that exist to be
+  read by someone else.
+- **Samples are signed with the service-role key, after the guard.** No policy
+  hands a client another user's `files` row and none should: 0004 calls file
+  access "a decision, not a row predicate". So `lib/uploads/sign.ts` mints the
+  URLs — shared with the approval queue, which has the same shape — and only for
+  keys the client's own RLS-scoped query returned. Approved samples only, in the
+  job's category only.
+- **Picking runs under the client's own key, not the service role.**
+  `claim_job_assignment()` is granted to `authenticated` precisely so
+  `auth.uid()` is a real caller it can check against `jobs.client_id`. It takes
+  the row lock, flips the other opt-ins to `not_selected` and writes the
+  `job_events` row in one transaction. The reads in `selectWorker()` exist to
+  give a decent sentence before that happens; the lock is what decides.
+- **Payment is missing here, not skipped.** Spec §4 charges at selection, into
+  escrow. Until Razorpay Route is wired, `selectWorker()` passes no
+  `payment_id` — a shape the function already allows for the rehire and admin
+  paths — and the screen says plainly that nothing is being charged rather than
+  quoting a total it will not collect. When the gateway lands, capture first,
+  pass the id in, ledger entries in the same transaction.
+- Not built yet: the client cannot cancel or unassign from this screen, and
+  nothing notifies the worker they were picked (`shortlist_ready` and the rest
+  of `notification_type` are still unused).
 
 ---
 

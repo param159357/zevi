@@ -99,6 +99,77 @@ export type ActiveOptIn = {
   };
 };
 
+// ---------------------------------------------------------------------------
+// The client's side: the shortlist (spec §5)
+// ---------------------------------------------------------------------------
+
+/** One approved sample, signed for a client who does not own the object. */
+export type ShortlistSample = {
+  id: string;
+  caption: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** Null when signing failed — the caption still says what the piece was. */
+  previewUrl: string | null;
+};
+
+/**
+ * A worker's rating, as spec §6 requires it to be shown: the number, the count
+ * behind it, and which category it is for. A 4.9 at decks and a 3.2 at video
+ * must not blend, so the category figure is what a client comparing decks sees
+ * — with the overall as the fallback for a worker who has finished jobs
+ * elsewhere but none here yet.
+ */
+export type WorkerRating = {
+  rating: number | null;
+  ratingCount: number;
+  jobsCompleted: number;
+  /** True when the numbers above are this job's category, not the overall. */
+  inCategory: boolean;
+};
+
+/** One opted-in worker, as the client reads them. */
+export type ShortlistWorker = {
+  optInId: string;
+  workerId: string;
+  displayName: string;
+  headline: string | null;
+  status: OptInStatus;
+  optedInAt: string;
+  /** The three short fields they wrote, which are the point of the screen. */
+  software: string;
+  turnaround: string;
+  noticed: string;
+  /** In the job's category where there is one, overall otherwise. */
+  rating: WorkerRating;
+  /** Overall, always — "new here, 40 jobs elsewhere" is worth seeing. */
+  totalJobsCompleted: number;
+  memberSince: string | null;
+  samples: ShortlistSample[];
+};
+
+/** Everything `/shortlist/[jobId]` renders. */
+export type Shortlist = {
+  jobId: string;
+  title: string;
+  status: JobStatus;
+  budgetPaise: number;
+  deadlineAt: string | null;
+  categoryId: string | null;
+  categoryName: string | null;
+  postedAsOther: boolean;
+  assignedWorkerId: string | null;
+  /** Best-rated first. Includes the not-selected ones once a job is assigned:
+   *  who was passed over is part of the record of the decision. */
+  workers: ShortlistWorker[];
+  /** More opt-ins exist than one page holds. */
+  truncated: boolean;
+};
+
+/** Picking redirects on success, so only the failure shape returns. */
+export type SelectWorkerResult = { ok: false; error: string };
+
 /** Exactly what the opt-in form holds. */
 export type OptInFormValues = {
   software: string;

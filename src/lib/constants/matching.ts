@@ -55,3 +55,30 @@ export const FEED_PAGE_SIZE = 50;
 
 /** Search param the category filter writes. */
 export const FEED_CATEGORY_PARAM = "category";
+
+// ---------------------------------------------------------------------------
+// The shortlist (spec §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Spec §5 shows the client up to five workers in three slot types, the middle
+ * three AI-ranked. Spec §16 cuts that from V1 in one line — "AI ranking of
+ * middle 3 → show all opted-in workers sorted by rating" — so this screen has
+ * no slots, no cap and no stored shortlist: every opted-in worker, best-rated
+ * first. `job_shortlists` and `job_shortlist_entries` stay empty until the
+ * ranking exists to record.
+ *
+ * The bound below is a page size, not the spec's five. A job that draws more
+ * opt-ins than this is a signal worth seeing rather than a list worth padding.
+ */
+export const SHORTLIST_PAGE_SIZE = 50;
+
+/**
+ * How long a sample preview link lives. Longer than the worker's own 60 seconds
+ * because a client is comparing portfolios side by side, and short enough that
+ * a copied URL is worthless by the time it is pasted anywhere.
+ */
+export const SHORTLIST_URL_TTL_SECONDS = 600;
+
+/** Search param `selectWorker` redirects back with. */
+export const SHORTLIST_PICKED_PARAM = "picked";

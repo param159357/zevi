@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import type { CommissionBreakdown } from "@/lib/money/commission";
 import { formatBps, formatPaise, formatPaiseCompact } from "@/lib/utils/money";
 
@@ -7,8 +9,18 @@ import { formatBps, formatPaise, formatPaiseCompact } from "@/lib/utils/money";
  *
  * So this is three lines and a total, always — even when the fee is small
  * enough that hiding it would be tempting.
+ *
+ * `note` is the sentence about *when* the money moves, which differs by screen:
+ * the posting form promises a charge at selection, and the shortlist has to say
+ * what actually happens there. The lines themselves never vary.
  */
-export function FeeBreakdown({ price }: { price: CommissionBreakdown }) {
+export function FeeBreakdown({
+  price,
+  note,
+}: {
+  price: CommissionBreakdown;
+  note?: ReactNode;
+}) {
   return (
     <div className="border-border bg-surface-muted space-y-3 rounded-xl border p-4">
       <dl className="space-y-2 text-sm">
@@ -29,8 +41,12 @@ export function FeeBreakdown({ price }: { price: CommissionBreakdown }) {
       </dl>
 
       <p className="text-muted text-xs">
-        Nothing is charged now. Payment happens when you pick a worker, and it&apos;s
-        held until you accept the work.
+        {note ?? (
+          <>
+            Nothing is charged now. Payment happens when you pick a worker, and it&apos;s
+            held until you accept the work.
+          </>
+        )}
       </p>
 
       <p className="text-muted text-xs">

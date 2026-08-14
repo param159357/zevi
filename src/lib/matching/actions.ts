@@ -1,16 +1,18 @@
 "use server";
 
 /**
- * Opting into a job — spec §6.
+ * The two ends of matching: a worker opting into a job (spec §6) and the client
+ * picking one of them (spec §5).
  *
  * Rules that hold everywhere below:
- *   * the worker is re-derived from the session on every call, never taken from
- *     the payload. A form that renders is not authorisation
- *   * the write goes through the worker's own Supabase client, so `approved
- *     workers opt into open jobs` (migration 0007) is what decides whether it
- *     lands: approved, active, the job open, the category theirs. None of those
- *     four facts is re-asserted here as a value — they are re-read as
- *     conditions, and the policy has the last word
+ *   * whoever is acting is re-derived from the session on every call, never
+ *     taken from the payload. A form that renders is not authorisation
+ *   * the write goes through that person's own Supabase client, so `approved
+ *     workers opt into open jobs` (migration 0007) is what decides whether an
+ *     opt-in lands — approved, active, the job open, the category theirs — and
+ *     `claim_job_assignment`'s own check is what decides whether a pick does.
+ *     None of those facts is re-asserted here as a value: they are re-read as
+ *     conditions, and the database has the last word
  *   * the five-slot cap is checked here for the message and enforced by
  *     `sync_opt_in_counters()`, which recounts from `job_opt_ins` and raises.
  *     The pre-check is a courtesy; the trigger is the limit
@@ -18,12 +20,21 @@
  *     violation into a sentence, they do not stand in for one
  */
 
+import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 
 import { requireRole } from "@/lib/auth/session";
+import { JOB_ROUTES } from "@/lib/constants/jobs";
+import { SHORTLIST_PICKED_PARAM } from "@/lib/constants/matching";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
 import { loadMatchingSettings, loadOptInCapacity } from "@/lib/matching/queries";
-import type { OptInInput, OptInResult, SimpleResult } from "@/lib/matching/types";
+import { PICKABLE_OPT_IN_STATUSES } from "@/lib/matching/shortlist";
+import type {
+  OptInInput,
+  OptInResult,
+  SelectWorkerResult,
+  SimpleResult,
+} from "@/lib/matching/types";
 import { parseOptInFields } from "@/lib/matching/validation";
 import { createClient } from "@/lib/supabase/server";
 
@@ -175,4 +186,119 @@ export async function withdrawOptIn(optInId: string): Promise<SimpleResult> {
   revalidatePath(WORKER_ROUTES.optIns);
 
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Picking one — spec §5
+// ---------------------------------------------------------------------------
+
+/**
+ * A raise out of `claim_job_assignment`, as a sentence. Every one of these is
+ * reachable without a bug: two tabs, a worker who withdrew while the client was
+ * reading, a suspension between the page rendering and the button being
+ * pressed. The log keeps the original.
+ */
+function describeClaimError(error: { code?: string; message: string }, jobId: string): string {
+  console.error(`[matching] claim on ${jobId} failed ${error.code ?? "?"}: ${error.message}`);
+
+  if (error.message.includes("already has an active assignment")) {
+    return "This job already has a worker on it. Reload to see who.";
+  }
+  if (error.message.includes("cannot be assigned")) {
+    return "This job isn't open any more, so it can't be assigned. Reload to see where it got to.";
+  }
+  if (error.message.includes("is not eligible to take work")) {
+    return "That worker can't take this job any more. Pick someone else.";
+  }
+  if (error.code === "42501" || error.message.includes("only the client of this job")) {
+    return "That job isn't yours to assign.";
+  }
+  return "We couldn't assign that. Try again.";
+}
+
+/**
+ * The client picks a worker (spec §5, step 5 of the core flow).
+ *
+ * **Payment is not wired up.** Spec §4 puts the charge exactly here — "client
+ * picks one, payment happens here, into escrow" — and Razorpay Route is not
+ * built, so this assigns the job with a null `payment_id` and no escrow behind
+ * it. `claim_job_assignment` already allows that shape for the rehire and admin
+ * paths, so nothing is being worked around; what is missing is the money. When
+ * the gateway lands, the payment is captured first and its id passed in here,
+ * in the same transaction as the ledger entries, and this comment goes away.
+ * Until then the confirmation screen says so rather than quoting a total it is
+ * not collecting.
+ *
+ * Authorisation is the database's, not this function's. `claim_job_assignment`
+ * runs under the *client's own* Supabase client — it is granted to
+ * `authenticated` precisely so the caller is a real `auth.uid()` — takes
+ * `SELECT … FOR UPDATE` on the job row, and refuses anyone who is not its
+ * client. The reads below exist to say something useful before that happens,
+ * not to decide it. Two clients double-clicking is the one race that costs real
+ * money, and it is settled by the lock, not by anything here.
+ */
+export async function selectWorker(input: {
+  jobId: string;
+  optInId: string;
+}): Promise<SelectWorkerResult> {
+  // No id is taken from this: the opt-in read below is scoped by `clients read
+  // opt-ins on their own jobs`, and the claim re-derives the caller from
+  // `auth.uid()` under the lock. The guard is here to bounce anyone who has no
+  // business on a client screen at all.
+  await requireRole("client");
+  const supabase = await createClient();
+
+  if (!UUID_PATTERN.test(input.jobId) || !UUID_PATTERN.test(input.optInId)) {
+    return { ok: false, error: "That job doesn't exist." };
+  }
+
+  // The opt-in carries the worker id, so the browser never gets to name who is
+  // being hired — it names which opt-in was on screen, and the worker comes
+  // from the row. `clients read opt-ins on their own jobs` is what returns it.
+  const { data: optIn, error: optInError } = await supabase
+    .from("job_opt_ins")
+    .select("id, worker_id, status")
+    .eq("id", input.optInId)
+    .eq("job_id", input.jobId)
+    .maybeSingle();
+
+  if (optInError) {
+    console.error(`[matching] could not read opt-in ${input.optInId}: ${optInError.message}`);
+    return { ok: false, error: "We couldn't check that opt-in. Try again." };
+  }
+
+  if (!optIn) {
+    return { ok: false, error: "That worker isn't on this job's list. Reload the page." };
+  }
+
+  if (!PICKABLE_OPT_IN_STATUSES.includes(optIn.status)) {
+    return {
+      ok: false,
+      error:
+        optIn.status === "withdrawn"
+          ? "That worker has withdrawn. Reload to see who's still available."
+          : "This job has already been assigned. Reload to see who's on it.",
+    };
+  }
+
+  const { error } = await supabase
+    .rpc("claim_job_assignment", {
+      p_job_id: input.jobId,
+      p_worker_id: optIn.worker_id,
+      p_opt_in_id: optIn.id,
+      p_source: "shortlist",
+    })
+    .single();
+
+  if (error) return { ok: false, error: describeClaimError(error, input.jobId) };
+
+  revalidatePath(JOB_ROUTES.dashboard);
+  revalidatePath(JOB_ROUTES.shortlist(input.jobId));
+  // The worker's side changes too: the job leaves the open feed, their opt-in
+  // becomes selected, and everyone else's becomes not_selected.
+  revalidatePath(WORKER_ROUTES.feed);
+  revalidatePath(WORKER_ROUTES.job(input.jobId));
+  revalidatePath(WORKER_ROUTES.optIns);
+
+  redirect(`${JOB_ROUTES.shortlist(input.jobId)}?${SHORTLIST_PICKED_PARAM}=${optIn.worker_id}`);
 }

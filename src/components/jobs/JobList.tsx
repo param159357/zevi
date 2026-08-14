@@ -42,6 +42,9 @@ export function JobList({ jobs }: { jobs: ClientJobSummary[] }) {
     <ul className="border-border divide-border divide-y rounded-xl border">
       {jobs.map((job) => {
         const editable = (EDITABLE_JOB_STATUSES as readonly string[]).includes(job.status);
+        // The shortlist is worth a link once there is something on it: someone
+        // to pick, or someone already picked (spec §5).
+        const shortlist = job.optInCount > 0 || job.assignedWorkerId !== null;
 
         return (
           <li key={job.id} className="flex items-start justify-between gap-4 px-4 py-3">
@@ -62,13 +65,21 @@ export function JobList({ jobs }: { jobs: ClientJobSummary[] }) {
                   job.postedAsOther ? "Uncategorised" : job.categoryName,
                   job.budgetPaise != null ? formatPaiseCompact(job.budgetPaise) : null,
                   job.deadlineAt ? `due ${formatDate(job.deadlineAt)}` : null,
-                  job.status === "open" && job.optInCount > 0
-                    ? `${job.optInCount} interested`
-                    : null,
                 ]
                   .filter(Boolean)
                   .join(" · ") || "Nothing filled in yet"}
               </p>
+
+              {shortlist ? (
+                <Link
+                  href={JOB_ROUTES.shortlist(job.id)}
+                  className="hover:text-accent text-accent block text-xs underline-offset-2 hover:underline"
+                >
+                  {job.assignedWorkerId !== null
+                    ? "See who you picked"
+                    : `${job.optInCount} interested — pick one`}
+                </Link>
+              ) : null}
             </div>
 
             <span
