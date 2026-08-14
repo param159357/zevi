@@ -29,6 +29,7 @@ import {
   PENDING_EMAIL_COOKIE,
   PENDING_EMAIL_COOKIE_MAX_AGE,
 } from "@/lib/constants/auth";
+import { WORKER_ROUTES } from "@/lib/constants/workers";
 import { getSiteUrl } from "@/lib/env";
 import { SmsNotConfiguredError, sendVerificationSms } from "@/lib/sms/send";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
@@ -571,7 +572,9 @@ export async function saveWorkerCategories(
   }
 
   // The unit the 24-hour approval queue works through (spec §6). It stays a
-  // draft until samples are attached and submitted.
+  // draft until samples are attached and `submit_worker_application()` moves it
+  // on — which opens one itself if this ever failed, so a signup interrupted
+  // here recovers rather than needing support.
   const { data: application, error: applicationError } = await supabase
     .from("worker_applications")
     .select("id")
@@ -592,5 +595,7 @@ export async function saveWorkerCategories(
     }
   }
 
-  redirect(AUTH_ROUTES.workerHome);
+  // Samples are the next gate, not the feed: nothing in the feed is reachable
+  // until an admin has approved them (spec §6).
+  redirect(WORKER_ROUTES.samples);
 }

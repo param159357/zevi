@@ -3,14 +3,16 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, auth built, clients can post jobs.** The app scaffold,
-Supabase clients, folder structure and the full database schema are in place and
-pushed. Signup and login work end to end for both sides — email verified through
-Supabase, mobile through our own OTP. A client can post a job: category tiles,
-brief, attachments, budget and deadline, autosaved as a draft and published
-through `publish_job()`. Nothing beyond that: no feed, no opt-ins, no shortlist,
-no payment, no delivery. Razorpay, SES, Sentry and SMS are still unwired, and
-attachments sit in Supabase Storage until R2 replaces it.
+**Status: schema applied, auth built, clients can post jobs, workers can apply.**
+The app scaffold, Supabase clients, folder structure and the full database schema
+are in place and pushed. Signup and login work end to end for both sides — email
+verified through Supabase, mobile through our own OTP. A client can post a job:
+category tiles, brief, attachments, budget and deadline, autosaved as a draft and
+published through `publish_job()`. A worker can add 3–6 samples per category with
+captions and submit them, and an admin can approve, flag or reject from the
+console queue. Nothing beyond that: no feed, no opt-ins, no shortlist, no
+payment, no delivery, no KYC. Razorpay, SES, Sentry and SMS are still unwired,
+and uploads sit in Supabase Storage until R2 replaces it.
 
 ---
 
@@ -87,7 +89,10 @@ src/
 │   ├── supabase/        client.ts (browser) · server.ts (server) · middleware.ts
 │   ├── auth/            session.ts (who is signed in) · actions.ts · types.ts
 │   ├── jobs/            actions.ts · queries.ts · validation.ts · types.ts
+│   ├── workers/         samples and the application: actions · queries · types
+│   ├── admin/           console guard + approval queue: session · actions · queries
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
+│   ├── uploads/         client.ts — browser-side hashing and object naming
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
 │   ├── utils/           pure helpers only
@@ -151,13 +156,16 @@ Rules:
 
 ### Schema
 
-23 migrations, 81 tables, RLS on every one. What to know before writing a query:
+27 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
-- **`profiles` is PII and no policy exposes it to another user.** What others may
-  see lives in `public_profiles` (a trigger-maintained projection),
+- **`profiles` is PII and no policy exposes it to another *user*.** What others
+  may see lives in `public_profiles` (a trigger-maintained projection),
   `worker_profiles` and `client_profiles`. Private counters live in
   `worker_state` and `user_private_stats` — dispute rate and risk score are
-  admin-only *by table*, not by remembering to trim a SELECT list.
+  admin-only *by table*, not by remembering to trim a SELECT list. The one
+  exception is staff: 0027 lets `manage_users` read every profile and
+  `review_workers` read workers only, because the approval screen exists to
+  check a legal name against an ID.
 - **Chat splits the same way.** `messages` holds the redacted body both
   participants read; `message_raw` holds the original, admins only.
 - **Money is an append-only ledger.** `ledger_transactions` + `ledger_entries`,
@@ -177,15 +185,22 @@ Rules:
   `budget_paise` nullable so autosave can store a half-written brief;
   `jobs_publishable` re-imposes every rule the moment the status is anything but
   'draft'.
+- **Worker applications move the same way** (0027):
+  `submit_worker_application()` counts samples per category against
+  `categories.sample_min` and starts the SLA clock;
+  `review_worker_application()` records the decision, stamps the samples and
+  writes the audit row in one transaction. UPDATE on `worker_applications` is
+  revoked from `authenticated`, so neither is bypassable from a browser.
+  `worker_samples_locked()` is what freezes a portfolio while it is in review.
 - **Append-only, enforced by trigger**: `admin_audit_log`, `job_events`,
   `ledger_*`, `job_financials`. UPDATE and DELETE raise.
 - **Tunables live in `platform_settings`**, read via `setting_int()` /
   `setting_bigint()` / `setting_bool()`. Slabs, tax and fees do not — see above.
 - Policy helpers: `is_admin()`, `admin_can(perm)`, `is_active_worker()`,
   `is_job_participant()`, `is_job_client()`, `worker_works_in_category()`,
-  `is_conversation_participant()`, `is_dispute_party()`. Call them as
-  `(select public.is_admin())` inside a policy so Postgres evaluates once per
-  statement rather than once per row.
+  `is_conversation_participant()`, `is_dispute_party()`,
+  `worker_samples_locked()`. Call them as `(select public.is_admin())` inside a
+  policy so Postgres evaluates once per statement rather than once per row.
 
 Money-moving writes — acceptance, escrow release, payouts, dispute decisions —
 have INSERT/UPDATE revoked from `authenticated` at the table level. They run
@@ -224,6 +239,64 @@ the code to the console, production refuses to send) and **no password reset**.
 
 The project has no custom SMTP either, so Supabase's built-in sender applies its
 own low hourly limit — fine for development, not for launch.
+
+---
+
+## Worker onboarding
+
+Spec §6 puts two gates between signing up and seeing a job, far apart in time.
+The first is built:
+
+```
+categories (max 3) → samples (3–6 each) → submitted → approved · flagged · rejected
+```
+
+- **Samples are uploaded straight to storage**, keyed
+  `worker-samples/<worker id>/<category id>/<uuid>.<ext>`, then registered by a
+  Server Action that re-reads the size and content type from storage. Same shape
+  as job attachments; `lib/uploads/client.ts` is the half they share.
+- **"Did you make this alone?" is refused, not recorded as false.** The stored
+  `true` is what makes a later plagiarism ban defensible (spec §10).
+- **Submitting is a one-way door.** `worker_samples_locked()` freezes the
+  portfolio the moment an attempt is in review, and again once it is approved. A
+  rejection unlocks it for the single resubmission, seven days later.
+- **One resubmission, enforced from every rejected attempt**, not just the newest
+  row — otherwise inserting a fresh draft would skip the wait.
+- Sample review is per *application*, not per sample: the decision stamps every
+  pending sample with the same outcome. The per-sample columns exist for the day
+  that is not enough.
+- Not built yet: KYC (spec puts it before the first payout, not at signup), the
+  60-second cap on video samples, and watermarked previews — samples are private
+  and only their owner and a reviewer can see them, so nothing is displayed
+  unwatermarked. All three land with the R2 pipeline.
+
+### The console
+
+`/admin` is a work queue (spec §7). Worker approvals is the only module that
+exists; `/admin` redirects there rather than pretending to be a shell for five
+queues that do not exist.
+
+Access is checked three times, deliberately not the same check three times:
+`requireAdmin(perm)` decides what renders (and 404s everyone else rather than
+admitting the route exists), the `admin_can(...)` policies decide what the
+queries return, and `review_worker_application()` looks the permission up again
+from the reviewer's id — under the service-role key `auth.uid()` is null, so
+`admin_can()` would answer false for a super admin.
+
+**Admin membership is granted out of band.** `admin_users` has RLS on and no
+policies at all, so there is no API path to it — run this in the Supabase SQL
+editor:
+
+```sql
+insert into public.admin_users (profile_id, role_id)
+select p.id, r.id
+from public.profiles p, public.admin_roles r
+where p.email = 'you@example.com' and r.code = 'super_admin';
+```
+
+`admin_roles` also ships `support`, `reviewer` and `finance` (0018). Every
+decision writes to `admin_audit_log`, which is append-only by trigger — a row
+there can never be edited or deleted, including by the service-role key.
 
 ---
 

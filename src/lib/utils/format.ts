@@ -57,3 +57,15 @@ export function formatTime(iso: string): string {
 export function daysUntil(iso: string, from: Date = new Date()): number {
   return Math.ceil((new Date(iso).getTime() - from.getTime()) / 86_400_000);
 }
+
+/**
+ * `4h left` · `20m left` · `3h overdue`. For SLA clocks, where a day is too
+ * coarse to be worth rendering — the worker approval queue runs on 24 hours.
+ */
+export function formatCountdown(iso: string, from: Date = new Date()): string {
+  const minutes = Math.round((new Date(iso).getTime() - from.getTime()) / 60_000);
+  const size = Math.abs(minutes);
+  const amount = size >= 60 ? `${Math.floor(size / 60)}h` : `${size}m`;
+
+  return minutes < 0 ? `${amount} overdue` : `${amount} left`;
+}

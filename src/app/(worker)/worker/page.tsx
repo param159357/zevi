@@ -3,35 +3,48 @@ import Link from "next/link";
 
 import { requireRole } from "@/lib/auth/session";
 import { AUTH_ROUTES } from "@/lib/constants/auth";
+import { APPROVAL_SLA_HOURS, WORKER_ROUTES } from "@/lib/constants/workers";
 import { createClient } from "@/lib/supabase/server";
+import { formatDate } from "@/lib/utils/format";
+import { countsTowardMinimum, loadSampleWorkspace } from "@/lib/workers/queries";
 import { cn } from "@/lib/utils/cn";
 
 export const metadata: Metadata = { title: "Your work · Zevi" };
 
 /**
- * Placeholder. Spec §6 puts the category-filtered feed, opt-ins, deliveries and
- * earnings here. For now it is the onboarding checklist: categories are done at
- * signup, samples and admin approval are the next things to build.
+ * Spec §6 puts the category-filtered feed, opt-ins, deliveries and earnings
+ * here. Until a worker is approved none of that is reachable, so for now this
+ * is the onboarding checklist and an honest answer to "what happens next".
  */
 export default async function WorkerHomePage() {
   const context = await requireRole("worker");
   const supabase = await createClient();
 
-  const { data: links, error: linkError } = await supabase
-    .from("worker_categories")
-    .select("category_id")
-    .eq("worker_id", context.user.id);
+  const workspace = await loadSampleWorkspace(supabase, context.user.id);
 
-  if (linkError) throw new Error(`Could not load your categories: ${linkError.message}`);
+  const names = workspace.categories.map((category) => category.name);
+  const sampleCount = workspace.categories.reduce(
+    (total, category) => total + category.samples.filter(countsTowardMinimum).length,
+    0,
+  );
+  const application = workspace.application;
+  const approved =
+    workspace.workerStatus === "approved" || workspace.workerStatus === "approved_with_flag";
 
-  const categoryIds = (links ?? []).map((row) => row.category_id);
+  function describeApproval(): string {
+    if (approved) return "Approved — jobs in your categories show in your feed.";
 
-  const { data: categories } =
-    categoryIds.length > 0
-      ? await supabase.from("categories").select("name").in("id", categoryIds)
-      : { data: [] };
-
-  const names = (categories ?? []).map((category) => category.name);
+    switch (application?.status) {
+      case "submitted":
+        return application.slaDueAt
+          ? `In review. We aim to decide by ${formatDate(application.slaDueAt)}.`
+          : "In review.";
+      case "rejected":
+        return "Not approved. Replace your samples and try once more.";
+      default:
+        return `${APPROVAL_SLA_HOURS}-hour turnaround once your samples are in.`;
+    }
+  }
 
   const steps = [
     {
@@ -44,18 +57,28 @@ export default async function WorkerHomePage() {
       detail: names.length > 0 ? names.join(", ") : "Not chosen yet",
       done: names.length > 0,
       href: AUTH_ROUTES.workerCategories,
+      linkLabel: names.length > 0 ? "Change" : "Choose now",
     },
     {
       label: "Add samples for review",
-      detail: "Three per category, minimum. Coming next.",
-      done: false,
+      detail:
+        sampleCount > 0
+          ? `${sampleCount} ${sampleCount === 1 ? "sample" : "samples"} across ${names.length} ${names.length === 1 ? "category" : "categories"}`
+          : "Three per category, minimum",
+      done: workspace.readyToSubmit || workspace.locked,
+      href: WORKER_ROUTES.samples,
+      linkLabel: workspace.locked ? "View" : sampleCount > 0 ? "Continue" : "Add samples",
     },
     {
       label: "Admin approval",
-      detail: "24-hour turnaround once your samples are in.",
-      done: false,
+      detail: describeApproval(),
+      done: approved,
+      href: WORKER_ROUTES.samples,
+      linkLabel: application?.status === "rejected" ? "See why" : undefined,
     },
   ];
+
+  const remaining = steps.filter((step) => !step.done).length;
 
   return (
     <div className="space-y-8">
@@ -64,7 +87,11 @@ export default async function WorkerHomePage() {
           Welcome, {context.profile.display_name ?? context.profile.full_name}
         </h1>
         <p className="text-muted text-sm">
-          Two steps left before jobs start showing up in your feed.
+          {approved
+            ? "You're approved. The job feed lands here next."
+            : remaining === 1
+              ? "One step left before jobs start showing up in your feed."
+              : `${remaining} steps left before jobs start showing up in your feed.`}
         </p>
       </div>
 
@@ -75,9 +102,7 @@ export default async function WorkerHomePage() {
               aria-hidden
               className={cn(
                 "mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px]",
-                step.done
-                  ? "border-success text-success"
-                  : "border-border text-muted",
+                step.done ? "border-success text-success" : "border-border text-muted",
               )}
             >
               {step.done ? "✓" : "–"}
@@ -89,12 +114,12 @@ export default async function WorkerHomePage() {
                 <span className="sr-only">{step.done ? " — done" : " — not done yet"}</span>
               </span>
               <span className="text-muted block text-xs">{step.detail}</span>
-              {step.href ? (
+              {step.href && step.linkLabel ? (
                 <Link
                   href={step.href}
                   className="text-foreground inline-block text-xs underline underline-offset-4"
                 >
-                  {step.done ? "Change" : "Choose now"}
+                  {step.linkLabel}
                 </Link>
               ) : null}
             </span>

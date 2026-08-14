@@ -5012,6 +5012,21 @@ export type Database = {
           status: string
         }[]
       }
+      review_worker_application: {
+        Args: {
+          p_application_id: string
+          p_decision: string
+          p_internal_note?: string
+          p_ip?: unknown
+          p_reason: string
+          p_reviewer_id: string
+        }
+        Returns: {
+          new_status: Database["public"]["Enums"]["worker_application_status"]
+          status: string
+          worker_id: string
+        }[]
+      }
       setting_bigint: {
         Args: { fallback: number; setting_key: string }
         Returns: number
@@ -5047,6 +5062,15 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      submit_worker_application: {
+        Args: { p_worker_id: string }
+        Returns: {
+          application_id: string
+          detail: string
+          sla_due_at: string
+          status: string
+        }[]
+      }
       verify_phone_otp: {
         Args: { p_otp: string; p_profile_id: string }
         Returns: {
@@ -5054,6 +5078,7 @@ export type Database = {
           status: string
         }[]
       }
+      worker_samples_locked: { Args: { uid?: string }; Returns: boolean }
       worker_works_in_category: { Args: { cat: string }; Returns: boolean }
     }
     Enums: {
