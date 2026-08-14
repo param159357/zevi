@@ -1,17 +1,36 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { AUTH_ROUTES } from "@/lib/constants/auth";
 import { isSupabaseConfigured, publicEnv } from "@/lib/env";
 import type { Database } from "@/types/database.types";
+
+/**
+ * Paths that make no sense without a session. This is a redirect, not a
+ * defence: the layout under each of these re-checks server-side, and RLS
+ * decides what any query can actually see.
+ *
+ * `/verify/email` is deliberately absent — email is confirmed before Supabase
+ * issues a session, so that screen has to work signed out.
+ */
+const SIGNED_IN_ONLY = [
+  "/dashboard",
+  "/worker",
+  "/admin",
+  AUTH_ROUTES.verifyMobile,
+  AUTH_ROUTES.workerCategories,
+];
+
+function requiresSession(pathname: string): boolean {
+  return SIGNED_IN_ONLY.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+}
 
 /**
  * Refreshes the Supabase auth session on every request and writes the rotated
  * cookies onto the response. Without this, Server Components see expired
  * tokens and users get logged out at random.
- *
- * Route protection is NOT handled here yet — add it once auth exists, and
- * still authorise in the data layer via RLS. Middleware is a convenience, not
- * a security boundary.
  */
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -54,7 +73,25 @@ export async function updateSession(request: NextRequest) {
   // Do not put code between createServerClient and getUser(). getUser()
   // revalidates the token with Supabase; anything in between can read a stale
   // session and make the refresh non-deterministic.
-  await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { pathname } = request.nextUrl;
+
+  if (!user && requiresSession(pathname)) {
+    const url = request.nextUrl.clone();
+    url.pathname = AUTH_ROUTES.login;
+    url.search = "";
+    url.searchParams.set("next", pathname);
+
+    const redirect = NextResponse.redirect(url);
+    // Carry the refreshed cookies over, or the next request starts from the
+    // stale session this one just replaced.
+    response.cookies.getAll().forEach((cookie) => redirect.cookies.set(cookie));
+
+    return redirect;
+  }
 
   return response;
 }

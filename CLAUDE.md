@@ -3,10 +3,11 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, no features yet.** The app scaffold, Supabase clients,
-folder structure and the full database schema are in place and pushed. No UI, no
-server actions, no route handlers. R2, Razorpay, SES and Sentry are all still
-unwired.
+**Status: schema applied, auth built.** The app scaffold, Supabase clients,
+folder structure and the full database schema are in place and pushed. Signup
+and login work end to end for both sides — email verified through Supabase,
+mobile through our own OTP. Nothing else is built: no job posting, no feed, no
+delivery. R2, Razorpay, SES, Sentry and SMS are all still unwired.
 
 ---
 
@@ -68,23 +69,27 @@ Tailwind v4 has no config file by design — theme tokens live in `@theme` insid
 src/
 ├── app/
 │   ├── (marketing)/     public pages — landing, legal, category browse
+│   ├── (auth)/          signup, login, the two verification steps
 │   ├── (client)/        job posters: post, shortlist, review, dashboard
 │   ├── (worker)/        workers: feed, opt-in, deliver, earnings
 │   ├── (admin)/         work queue: approvals, disputes, payouts, users
+│   ├── auth/callback/   where the email confirmation link lands
 │   ├── api/             route handlers — webhooks (Razorpay), cron, uploads
 │   ├── layout.tsx       root layout
 │   └── globals.css      Tailwind entry + theme tokens
 ├── components/
-│   ├── ui/              generic primitives: Button, Input, Modal
+│   ├── ui/              generic primitives: Button, TextField, Alert
 │   └── <feature>/       feature-scoped components, colocated by domain
 ├── lib/
 │   ├── supabase/        client.ts (browser) · server.ts (server) · middleware.ts
+│   ├── auth/            session.ts (who is signed in) · actions.ts · types.ts
+│   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
 │   ├── utils/           pure helpers only
 │   └── env.ts           validated environment access
 ├── hooks/               shared React hooks
 ├── types/               database.types.ts (generated) + shared domain types
-└── middleware.ts        session refresh on every request
+└── middleware.ts        session refresh + signed-in-only redirects
 
 supabase/
 └── migrations/          SQL migrations, checked in, forward-only
@@ -132,6 +137,12 @@ Rules:
   The spec treats this as correctness, not optimisation.
 - Job assignment takes a database-level lock. Double-assignment is the one race
   that costs real money.
+- **Grants are not inherited any more.** This project's default privileges give
+  `anon`/`authenticated`/`service_role` no SELECT, INSERT, UPDATE or DELETE on a
+  new table, so a table created without grants is invisible to PostgREST —
+  `42501 permission denied`, before RLS is ever consulted. Migration 0020 sets
+  `alter default privileges` so this is handled going forward; if a new table
+  ever 42501s, that is where to look.
 
 ### Schema
 
@@ -167,6 +178,39 @@ Money-moving writes — acceptance, escrow release, payouts, dispute decisions �
 have INSERT/UPDATE revoked from `authenticated` at the table level. They run
 server-side with the service-role client, in the same transaction as their
 ledger entries. That is not a workaround for a missing policy; it is the policy.
+
+---
+
+## Auth
+
+Spec §5 and §6 both open the same way: email and mobile, both compulsory and
+both verified. The flow is a four-state machine, resolved in one place by
+`resolveStep()` in [src/lib/auth/session.ts](src/lib/auth/session.ts):
+
+```
+verify_email → verify_mobile → choose_role → complete
+```
+
+- **Email** is Supabase Auth's. `signUp` sends the confirmation link,
+  `/auth/callback` exchanges the code for a session, and an `auth.users` trigger
+  mirrors `email_confirmed_at` into `profiles.email_verified_at`.
+- **Mobile** is ours, because SES sends email only. `request_phone_verification()`
+  stores a bcrypt-hashed OTP and owns the cooldown, hourly cap and attempt cap;
+  `verify_phone_otp()` is the only writer of `profiles.mobile_verified_at`. Both
+  are service-role only, called from Server Actions.
+- **The number is never written before it is proven.** `profiles.mobile` has a
+  unique index; writing an unverified number would let anyone squat one.
+- `intended_role` lives in auth metadata, which the user can edit, so it decides
+  which screen comes next and **never** what an account may do. The role records
+  (`client_profiles`, `worker_profiles`) are inserted by the user under RLS.
+- Guards in layouts, not just middleware. `requireRole()` re-checks server-side;
+  middleware only spares signed-out visitors a wasted render.
+
+Two things still missing, deliberately: **no SMS provider** (development prints
+the code to the console, production refuses to send) and **no password reset**.
+
+The project has no custom SMTP either, so Supabase's built-in sender applies its
+own low hourly limit — fine for development, not for launch.
 
 ---
 

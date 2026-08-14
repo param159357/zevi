@@ -1,22 +1,57 @@
 @import "tailwindcss";
 
+/*
+ * Theme tokens. Tailwind v4 has no config file by design — this is the config.
+ *
+ * The palette is deliberately quiet: signup and the product surfaces want to be
+ * fast and legible. Marketing pages can reach for depth and motion on top of
+ * these, not instead of them.
+ */
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --surface: #ffffff;
+  --surface-muted: #f6f6f7;
+  --border: #e4e4e7;
+  --muted: #5b6472;
+  --primary: #18181b;
+  --primary-foreground: #fafafa;
+  --accent: #4338ca;
+  --danger: #b42318;
+  --success: #067647;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+    --surface: #131316;
+    --surface-muted: #1a1a1e;
+    --border: #2a2a30;
+    --muted: #a0a0ab;
+    --primary: #fafafa;
+    --primary-foreground: #18181b;
+    --accent: #a5b4fc;
+    --danger: #f97066;
+    --success: #47cd89;
   }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
 }
 
 body {

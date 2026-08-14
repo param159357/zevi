@@ -4986,6 +4986,19 @@ export type Database = {
       is_job_client: { Args: { job: string }; Returns: boolean }
       is_job_participant: { Args: { job: string }; Returns: boolean }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }
+      request_phone_verification: {
+        Args: {
+          p_mobile: string
+          p_otp: string
+          p_profile_id: string
+          p_request_ip?: unknown
+        }
+        Returns: {
+          expires_at: string
+          retry_after_seconds: number
+          status: string
+        }[]
+      }
       setting_bigint: {
         Args: { fallback: number; setting_key: string }
         Returns: number
@@ -5020,6 +5033,13 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      verify_phone_otp: {
+        Args: { p_otp: string; p_profile_id: string }
+        Returns: {
+          attempts_left: number
+          status: string
+        }[]
       }
       worker_works_in_category: { Args: { cat: string }; Returns: boolean }
     }

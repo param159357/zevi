@@ -43,6 +43,20 @@ export const publicEnv = {
 };
 
 /**
+ * Absolute origin of this deployment, used to build the links Supabase puts in
+ * confirmation emails. Those links have to be on the project's redirect allow
+ * list (Supabase dashboard → Authentication → URL Configuration) or Supabase
+ * quietly falls back to the Site URL.
+ */
+export function getSiteUrl(): string {
+  const configured =
+    process.env.NEXT_PUBLIC_SITE_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined);
+
+  return (configured ?? "http://localhost:3000").replace(/\/+$/, "");
+}
+
+/**
  * Server-only. Importing this from a Client Component leaks secrets into the
  * browser bundle — don't.
  */
