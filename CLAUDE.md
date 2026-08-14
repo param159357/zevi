@@ -3,11 +3,14 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, auth built.** The app scaffold, Supabase clients,
-folder structure and the full database schema are in place and pushed. Signup
-and login work end to end for both sides — email verified through Supabase,
-mobile through our own OTP. Nothing else is built: no job posting, no feed, no
-delivery. R2, Razorpay, SES, Sentry and SMS are all still unwired.
+**Status: schema applied, auth built, clients can post jobs.** The app scaffold,
+Supabase clients, folder structure and the full database schema are in place and
+pushed. Signup and login work end to end for both sides — email verified through
+Supabase, mobile through our own OTP. A client can post a job: category tiles,
+brief, attachments, budget and deadline, autosaved as a draft and published
+through `publish_job()`. Nothing beyond that: no feed, no opt-ins, no shortlist,
+no payment, no delivery. Razorpay, SES, Sentry and SMS are still unwired, and
+attachments sit in Supabase Storage until R2 replaces it.
 
 ---
 
@@ -78,11 +81,13 @@ src/
 │   ├── layout.tsx       root layout
 │   └── globals.css      Tailwind entry + theme tokens
 ├── components/
-│   ├── ui/              generic primitives: Button, TextField, Alert
+│   ├── ui/              generic primitives: Button, TextField, TextArea, Alert
 │   └── <feature>/       feature-scoped components, colocated by domain
 ├── lib/
 │   ├── supabase/        client.ts (browser) · server.ts (server) · middleware.ts
 │   ├── auth/            session.ts (who is signed in) · actions.ts · types.ts
+│   ├── jobs/            actions.ts · queries.ts · validation.ts · types.ts
+│   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
 │   ├── utils/           pure helpers only
@@ -146,7 +151,7 @@ Rules:
 
 ### Schema
 
-19 migrations, 81 tables, RLS on every one. What to know before writing a query:
+23 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another user.** What others may
   see lives in `public_profiles` (a trigger-maintained projection),
@@ -164,6 +169,14 @@ Rules:
   `job_financials` freezes a job's price at assignment and cannot be updated.
 - **Assignment goes through `claim_job_assignment()`**, which takes
   `SELECT … FOR UPDATE` on the job row. Never INSERT `job_assignments` directly.
+- **Posting goes through `publish_job()`** (0022), the same way: it locks the
+  row, decides open vs `pending_moderation`, and writes the moderation and
+  classification queue rows in the same transaction. Never move a job out of
+  'draft' by hand.
+- **Only a draft may be incomplete.** 0022 made `title`, `description` and
+  `budget_paise` nullable so autosave can store a half-written brief;
+  `jobs_publishable` re-imposes every rule the moment the status is anything but
+  'draft'.
 - **Append-only, enforced by trigger**: `admin_audit_log`, `job_events`,
   `ledger_*`, `job_financials`. UPDATE and DELETE raise.
 - **Tunables live in `platform_settings`**, read via `setting_int()` /
@@ -218,9 +231,11 @@ own low hourly limit — fine for development, not for launch.
 
 - **Store and compute every amount in paise (integer).** No floats anywhere near
   money — `₹149` is `14900`. Format to rupees only at the render edge.
-- All commission, fee, and payout maths lives in one module under
-  `lib/constants/` + a dedicated calculator. Never inline a slab percentage in a
-  component.
+- All commission, fee, and payout maths lives in one module —
+  [src/lib/money/commission.ts](src/lib/money/commission.ts), with the fixed
+  limits in `lib/constants/` and the versioned rates loaded by
+  `lib/money/rates.ts`. Never inline a slab percentage in a component. Its
+  output is checked against every worked example in SPEC §8.
 - **Never trust an amount sent from the browser.** Recompute server-side from
   the job record before charging or paying anyone.
 - Fees, commission, and GST are always separate visible lines, never folded into

@@ -2189,7 +2189,7 @@ export type Database = {
           assigned_at: string | null
           assigned_worker_id: string | null
           auto_accepted: boolean
-          budget_paise: number
+          budget_paise: number | null
           cancelled_at: string | null
           category_id: string | null
           client_id: string
@@ -2198,7 +2198,7 @@ export type Database = {
           currency: string
           deadline_at: string | null
           delivered_at: string | null
-          description: string
+          description: string | null
           expires_at: string | null
           id: string
           opt_in_count: number
@@ -2210,7 +2210,7 @@ export type Database = {
           revision_count: number
           shortlist_generated_at: string | null
           status: Database["public"]["Enums"]["job_status"]
-          title: string
+          title: string | null
           updated_at: string
         }
         Insert: {
@@ -2218,7 +2218,7 @@ export type Database = {
           assigned_at?: string | null
           assigned_worker_id?: string | null
           auto_accepted?: boolean
-          budget_paise: number
+          budget_paise?: number | null
           cancelled_at?: string | null
           category_id?: string | null
           client_id: string
@@ -2227,7 +2227,7 @@ export type Database = {
           currency?: string
           deadline_at?: string | null
           delivered_at?: string | null
-          description: string
+          description?: string | null
           expires_at?: string | null
           id?: string
           opt_in_count?: number
@@ -2239,7 +2239,7 @@ export type Database = {
           revision_count?: number
           shortlist_generated_at?: string | null
           status?: Database["public"]["Enums"]["job_status"]
-          title: string
+          title?: string | null
           updated_at?: string
         }
         Update: {
@@ -2247,7 +2247,7 @@ export type Database = {
           assigned_at?: string | null
           assigned_worker_id?: string | null
           auto_accepted?: boolean
-          budget_paise?: number
+          budget_paise?: number | null
           cancelled_at?: string | null
           category_id?: string | null
           client_id?: string
@@ -2256,7 +2256,7 @@ export type Database = {
           currency?: string
           deadline_at?: string | null
           delivered_at?: string | null
-          description?: string
+          description?: string | null
           expires_at?: string | null
           id?: string
           opt_in_count?: number
@@ -2268,7 +2268,7 @@ export type Database = {
           revision_count?: number
           shortlist_generated_at?: string | null
           status?: Database["public"]["Enums"]["job_status"]
-          title?: string
+          title?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -4986,6 +4986,19 @@ export type Database = {
       is_job_client: { Args: { job: string }; Returns: boolean }
       is_job_participant: { Args: { job: string }; Returns: boolean }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }
+      publish_job: {
+        Args: {
+          p_client_id: string
+          p_device_hash?: string
+          p_ip?: unknown
+          p_job_id: string
+        }
+        Returns: {
+          new_status: Database["public"]["Enums"]["job_status"]
+          review_trigger: string
+          status: string
+        }[]
+      }
       request_phone_verification: {
         Args: {
           p_mobile: string
