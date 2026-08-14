@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { AppHeader } from "@/components/AppHeader";
+import { WorkerNav } from "@/components/workers/WorkerNav";
 import { requireRole } from "@/lib/auth/session";
 
 /**
@@ -13,6 +14,7 @@ export default async function WorkerLayout({ children }: { children: ReactNode }
   return (
     <div className="min-h-screen">
       <AppHeader name={context.profile.display_name ?? context.profile.full_name} />
+      <WorkerNav />
       <main className="mx-auto max-w-4xl px-4 py-10">{children}</main>
     </div>
   );

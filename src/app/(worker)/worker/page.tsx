@@ -73,8 +73,12 @@ export default async function WorkerHomePage() {
       label: "Admin approval",
       detail: describeApproval(),
       done: approved,
-      href: WORKER_ROUTES.samples,
-      linkLabel: application?.status === "rejected" ? "See why" : undefined,
+      href: approved ? WORKER_ROUTES.feed : WORKER_ROUTES.samples,
+      linkLabel: approved
+        ? "Browse jobs"
+        : application?.status === "rejected"
+          ? "See why"
+          : undefined,
     },
   ];
 
@@ -88,7 +92,7 @@ export default async function WorkerHomePage() {
         </h1>
         <p className="text-muted text-sm">
           {approved
-            ? "You're approved. The job feed lands here next."
+            ? "You're approved. Open jobs in your categories are in your feed."
             : remaining === 1
               ? "One step left before jobs start showing up in your feed."
               : `${remaining} steps left before jobs start showing up in your feed.`}

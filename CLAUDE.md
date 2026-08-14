@@ -3,14 +3,15 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, auth built, clients can post jobs, workers can apply.**
+**Status: schema applied, auth built, clients post jobs, workers apply and opt in.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
 category tiles, brief, attachments, budget and deadline, autosaved as a draft and
 published through `publish_job()`. A worker can add 3–6 samples per category with
 captions and submit them, and an admin can approve, flag or reject from the
-console queue. Nothing beyond that: no feed, no opt-ins, no shortlist, no
+console queue. An approved worker sees the category-filtered feed, reads a brief
+and opts in with the three short fields. Nothing beyond that: no shortlist, no
 payment, no delivery, no KYC. Razorpay, SES, Sentry and SMS are still unwired,
 and uploads sit in Supabase Storage until R2 replaces it.
 
@@ -90,6 +91,7 @@ src/
 │   ├── auth/            session.ts (who is signed in) · actions.ts · types.ts
 │   ├── jobs/            actions.ts · queries.ts · validation.ts · types.ts
 │   ├── workers/         samples and the application: actions · queries · types
+│   ├── matching/        the feed and opt-ins: actions · queries · validation · types
 │   ├── admin/           console guard + approval queue: session · actions · queries
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── uploads/         client.ts — browser-side hashing and object naming
@@ -156,7 +158,7 @@ Rules:
 
 ### Schema
 
-27 migrations, 81 tables, RLS on every one. What to know before writing a query:
+28 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -192,6 +194,11 @@ Rules:
   writes the audit row in one transaction. UPDATE on `worker_applications` is
   revoked from `authenticated`, so neither is bypassable from a browser.
   `worker_samples_locked()` is what freezes a portfolio while it is in review.
+- **An opt-in is written once.** 0028 narrows the worker's UPDATE on
+  `job_opt_ins` to `(status, withdrawn_at)`, so the withdrawal the policy allows
+  cannot carry a rewritten `noticed_detail` along with it. The five-slot cap and
+  both counters are `sync_opt_in_counters()`, which recounts rather than
+  increments — read `worker_profiles.active_opt_ins`, never a tally of your own.
 - **Append-only, enforced by trigger**: `admin_audit_log`, `job_events`,
   `ledger_*`, `job_financials`. UPDATE and DELETE raise.
 - **Tunables live in `platform_settings`**, read via `setting_int()` /
@@ -297,6 +304,39 @@ where p.email = 'you@example.com' and r.code = 'super_admin';
 `admin_roles` also ships `support`, `reviewer` and `finance` (0018). Every
 decision writes to `admin_audit_log`, which is append-only by trigger — a row
 there can never be edited or deleted, including by the service-role key.
+
+---
+
+## The feed and opting in
+
+Spec §6's second half, and the first screen an approved worker uses every day.
+
+- **The feed is filtered by RLS, not by the query.** `approved workers read the
+  open feed` (0006) is what limits `jobs` to open rows in a category the worker
+  works in; the `.eq`/`.in` in `loadWorkerFeed` are there for `jobs_feed_idx` and
+  for readability. The category tabs are links, so `/worker/jobs` ships no
+  route-specific JavaScript at all.
+- **A card's client half comes from `client_profiles` and `public_profiles`.**
+  `jobs.client_id` points at `profiles`, so there is no FK to embed along — and
+  there should not be. Two explicit reads of the two public projections instead.
+- **The three short fields are one budget.** 300 characters across all of them
+  (`job_opt_ins_total_length`), which is why `parseOptInFields` checks them
+  together and the form shows one running count rather than three.
+- **The dwell timer is friction, not a gate.** `brief_opened_at` is stamped by
+  the server that rendered the brief and posted back by the browser, so a worker
+  who edits the payload can shorten their own wait — 0007 says as much, and
+  stores the column so the pattern is visible in the data. Closing it needs a
+  signed token or a server-side record of the page view. Neither exists yet.
+- **The five-slot cap is read, not assumed.** `worker_state.opt_in_limit_override`
+  beats `platform_settings.matching.max_active_opt_ins` for one worker, exactly
+  as `sync_opt_in_counters()` decides it. The pre-check in `optIntoJob()` exists
+  for the sentence; the trigger is the limit.
+- Withdrawal is offered on an `active` opt-in only. The policy allows it while
+  shortlisted too, but a worker vanishing from a list a client is mid-decision on
+  is a behaviour spec §6 has penalties for and no rule about — so it waits for one.
+- Not built yet: the shortlist, and therefore anything that reads `rank_score`.
+  A worker cannot see a job's attachments before assignment either —
+  `job_attachments` follows `is_job_participant`, deliberately.
 
 ---
 

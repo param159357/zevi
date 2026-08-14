@@ -87,6 +87,9 @@ export function reverseImageSearchUrl(signedUrl: string): string {
 export const WORKER_ROUTES = {
   home: "/worker",
   samples: "/worker/samples",
+  feed: "/worker/jobs",
+  job: (jobId: string) => `/worker/jobs/${jobId}`,
+  optIns: "/worker/opt-ins",
 } as const;
 
 export const ADMIN_ROUTES = {

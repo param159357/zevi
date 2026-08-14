@@ -59,6 +59,20 @@ export function daysUntil(iso: string, from: Date = new Date()): number {
 }
 
 /**
+ * `4.8 ★` — or null when there is nothing to average yet, which the caller says
+ * in words instead. Spec §6 never shows a rating without its job count beside
+ * it, so the count is the caller's to render and this only formats the number.
+ */
+export function formatRating(rating: number | null): string | null {
+  return rating === null ? null : `${rating.toFixed(1)} ★`;
+}
+
+/** `12 jobs` · `1 job`. */
+export function formatCount(count: number, noun: string, plural = `${noun}s`): string {
+  return `${count} ${count === 1 ? noun : plural}`;
+}
+
+/**
  * `4h left` · `20m left` · `3h overdue`. For SLA clocks, where a day is too
  * coarse to be worth rendering — the worker approval queue runs on 24 hours.
  */
