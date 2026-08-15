@@ -28,15 +28,18 @@ export default async function AdminLayout({ children }: { children: ReactNode })
 
   // What this account may open. A queue they cannot act on is not a tab — the
   // page would 404 and the nav would have been the thing that lied.
-  const [canReviewWorkers, canManagePayouts] = await Promise.all([
-    adminCan("review_workers"),
-    adminCan("manage_payouts"),
-  ]);
+  const [canReviewWorkers, canManagePayouts, canViewDisputes, canManageUsers] =
+    await Promise.all([
+      adminCan("review_workers"),
+      adminCan("manage_payouts"),
+      adminCan("view_disputes"),
+      adminCan("manage_users"),
+    ]);
 
   return (
     <div className="min-h-screen">
       <header className="border-border border-b">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-4">
           <div className="flex items-baseline gap-3">
             <Link href={ADMIN_ROUTES.home} className="text-lg font-semibold tracking-tight">
               Zevi
@@ -53,9 +56,14 @@ export default async function AdminLayout({ children }: { children: ReactNode })
         </div>
       </header>
 
-      <AdminNav canReviewWorkers={canReviewWorkers} canManagePayouts={canManagePayouts} />
+      <AdminNav
+        canReviewWorkers={canReviewWorkers}
+        canManagePayouts={canManagePayouts}
+        canViewDisputes={canViewDisputes}
+        canManageUsers={canManageUsers}
+      />
 
-      <main className="mx-auto max-w-5xl px-4 py-10">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 py-10">{children}</main>
     </div>
   );
 }

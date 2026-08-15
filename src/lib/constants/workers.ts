@@ -106,4 +106,10 @@ export const ADMIN_ROUTES = {
   approvals: "/admin/approvals",
   application: (applicationId: string) => `/admin/approvals/${applicationId}`,
   kyc: "/admin/kyc",
+  disputes: "/admin/disputes",
+  dispute: (disputeId: string) => `/admin/disputes/${disputeId}`,
+  users: "/admin/users",
+  user: (profileId: string) => `/admin/users/${profileId}`,
+  payouts: "/admin/payouts",
+  payoutBatch: (batchId: string) => `/admin/payouts/${batchId}`,
 } as const;

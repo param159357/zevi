@@ -34,13 +34,23 @@ disagree. A pass writes a verified `payout_methods` row, which is exactly what
 `build_payout_batch()` has been skipping every worker for want of. Three failed
 attempts and a duplicate PAN both land in a new console queue.
 
-Nothing beyond that: no chat, no ratings, no disputes — and **money still cannot
-leave the platform account**. The batch assembles and stops: the disbursement
-step that turns a `payouts` row into a bank transfer, writes `payout_paid` to the
-ledger and handles a failure is not built. That is now the single thing standing
-between this and a worker holding the money. Refunds do not exist either. SES,
-Sentry and SMS are unwired, and uploads sit in Supabase Storage until R2 replaces
-it.
+And the console is now the five modules spec §7 describes rather than two. Home
+is a real work queue ordered by what is rotting; disputes have a queue and a
+one-screen case with the three outcomes behind it; users can be searched, read
+whole and warned, suspended or banned; payout batches can be reviewed before a
+run and failed payouts returned to the next cycle.
+
+Nothing beyond that: no chat, no ratings — and **money still cannot leave the
+platform account**. The batch assembles and stops: the disbursement step that
+turns a `payouts` row into a bank transfer, writes `payout_paid` to the ledger
+and handles a failure is not built. That is still the single thing standing
+between this and a worker holding the money, and it is now also what stands
+between a decided dispute and a client's refund: `resolve_dispute()` moves the
+worker's share through the ledger and leaves the client's as a `pending` refund
+row, because Razorpay's refund API is unwired too. **Nothing raises a dispute
+yet** — spec §4's step 8 gives the client accept, revise or dispute and only the
+first two are built — so the queue is correct and empty. SES, Sentry and SMS are
+unwired, and uploads sit in Supabase Storage until R2 replaces it.
 
 ---
 
@@ -149,7 +159,10 @@ src/
 │   ├── workers/         samples and the application: actions · queries · types
 │   ├── matching/        feed, opt-ins, shortlist: actions · queries · shortlist · validation · types
 │   ├── deliveries/      delivery, acceptance, revisions: actions · queries · access · preview · validation · types
-│   ├── admin/           console guard + approval queue: session · actions · queries
+│   ├── admin/           the console (spec §7): session · types · queries and
+│   │                    actions for approvals and KYC · queue (home) ·
+│   │                    disputes · users · payouts · decisions (the four
+│   │                    money-and-account actions 0034 added)
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
 │   ├── payouts/         the twice-weekly cycle: cycle · eligibility · queries · types
@@ -218,7 +231,7 @@ Rules:
 
 ### Schema
 
-33 migrations, 81 tables, RLS on every one. What to know before writing a query:
+35 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -270,6 +283,22 @@ Rules:
   name mismatch is terminal and `review_worker_kyc()` refuses to lift it, which
   is what spec §6's "no override" looks like as code rather than as a policy
   someone remembers.
+- **A dispute is decided while its money is still in escrow** (0034).
+  `resolve_dispute()` refuses a job whose hold is already released and says so —
+  spec §11 lets a client raise one up to 48 hours *after* acceptance, and that
+  case needs the worker's earning reversed (`earning_status` has 'reversed' for
+  it), which is a flow, not a branch. A full release writes the same four ledger
+  legs, for the same amounts off the same frozen `job_financials` row, as
+  `accept_job_delivery()` — a release **is** an acceptance, arrived at the slow
+  way. Only the worker's share moves through the ledger; the client's becomes a
+  `pending` refund, so the escrow account's balance stays equal to what the
+  platform actually holds.
+- **`profiles.status` is moved by `apply_user_sanction()` and nowhere else**
+  (0034). It writes the `user_sanctions` row, the status change and the audit
+  row in one transaction, refuses a target who is an active console member, and
+  `lift_user_sanction()` returns the account to `active` only when nothing else
+  is still holding it down — two overlapping suspensions lifted one at a time
+  must not let the first lift undo the second.
 - **The full PAN and account number are not in this database.** Only
   `pan_last4` / `account_last4` and a keyed HMAC — `KYC_HASH_PEPPER` lives in the
   environment, so a database copy answers "same PAN?" for nobody but us. Don't
@@ -376,9 +405,27 @@ categories (max 3) → samples (3–6 each) → submitted → approved · flagge
 
 ### The console
 
-`/admin` is a work queue (spec §7). Two of its five modules exist — worker
-approvals and KYC review — so `/admin` redirects to whichever the account can
-open rather than pretending to be a shell for the other three.
+`/admin` is a work queue (spec §7), and home is the work queue itself rather
+than a redirect: five counts, each with the deadline closest to breaching, and
+**the sort key is the deadline, not the count**. Forty approvals with eighteen
+hours left is a calmer morning than one dispute four days into a five-day clock.
+
+Five modules, and the two that count without linking anywhere say so:
+
+| Module | Route | Permission |
+|---|---|---|
+| Work queue | `/admin` | membership |
+| Disputes | `/admin/disputes` | `view_disputes` · `resolve_disputes` to decide |
+| Worker approvals | `/admin/approvals` | `review_workers` |
+| Users | `/admin/users` | `manage_users` |
+| Payouts | `/admin/payouts` | `manage_payouts` |
+| KYC review | `/admin/kyc` | `manage_payouts` |
+
+Expiring jobs and flagged reports are **counted on the home screen and link
+nowhere**, because spec §16 puts a job list and a reports module in V1 and
+neither is built. A number with no door beats a tab that 404s, and beats silence
+by more — an unread abuse report is the thing this screen exists to stop being
+invisible.
 
 The layout guard is **membership** (`requireAnyAdmin`), not one permission. It
 used to be `review_workers`, which was indistinguishable from correct while
@@ -389,9 +436,21 @@ it needs, and `AdminNav` only renders a tab the account can actually open.
 Access is checked three times, deliberately not the same check three times:
 `requireAdmin(perm)` decides what renders (and 404s everyone else rather than
 admitting the route exists), the `admin_can(...)` policies decide what the
-queries return, and `review_worker_application()` looks the permission up again
-from the reviewer's id — under the service-role key `auth.uid()` is null, so
-`admin_can()` would answer false for a super admin.
+queries return, and every decision function — `review_worker_application()`,
+`review_worker_kyc()`, `resolve_dispute()`, `apply_user_sanction()`,
+`lift_user_sanction()`, `review_payout_batch()`, `retry_failed_payout()` — looks
+the permission up again from the actor's id, because under the service-role key
+`auth.uid()` is null and `admin_can()` would answer false for a super admin.
+
+**When a console screen cannot read something, widen the policy.** 0035 is the
+worked example: a `support` account holds `resolve_disputes` and neither
+`view_finance` nor `manage_users`, so the dispute screen could show both
+statements, the whole chat and every file — and not the amount it was asking
+someone to divide. The fix was `view_disputes` on `escrow_holds` and
+`job_financials`, not a service-role read in the query module. The same
+migration adds `is_admin_account(uuid)`, because `admin_users` has RLS on and no
+policies at all: a direct SELECT comes back empty even for a super admin, so the
+user screen would have cheerfully offered to ban a colleague.
 
 **Admin membership is granted out of band.** `admin_users` has RLS on and no
 policies at all, so there is no API path to it — run this in the Supabase SQL
@@ -723,6 +782,54 @@ settle_worker_kyc()              verified · blocked · failed
   verified, so a worker who switches banks currently needs an admin. Doing it
   properly means re-verifying the new account before retiring the old one, which
   is a flow, not a field.
+
+---
+
+## Disputes
+
+Spec §7's dispute module and spec §11's three outcomes. V1 is layer 3 only —
+§16 cuts the four-layer system down to "handle disputes personally at first" —
+so `resolve_dispute()` (0034) is a human decision and there is no auto-resolver,
+no self-settlement screen and no instant split.
+
+```
+release   escrow → worker payable + revenue + tax     the acceptance ledger
+refund    escrow → a `pending` refunds row            nothing moves yet
+split     both, pro-rated by split_client_bps
+```
+
+- **Only the worker's share moves through the ledger.** The client's share is
+  still sitting in the platform's gateway account and Razorpay's refund API is
+  not wired, so no entry is written for it. That is the position 0031 leaves a
+  payout in, for the same reason, and it keeps the escrow account's balance equal
+  to what is actually held. `escrow_holds` records the *decision*; the ledger
+  records the *movement*; the two disagreeing is the gap where the gateway call
+  goes, not drift.
+- **A split pro-rates the worker's commission and GST by the same share as the
+  money.** A worker paid 60% of the budget is charged commission on 60% of it,
+  both floored, so the remainder lands with the worker and `worker_net` can
+  never go negative. At 100% every figure collapses to the frozen one, which is
+  the property that matters: a full release and an acceptance are the same four
+  ledger legs.
+- **The ₹15 dispute fee is not charged.** `disputes.fee_paise` stays 0. Charging
+  it needs either a ledger movement against a party or a `worker_adjustments`
+  row, and nothing on the platform writes an adjustment yet (0031 says the same
+  about penalties). A ₹15 nobody collected would be worse than a zero.
+- **Whether a client who wins gets their commission and GST back is left
+  open.** Spec §8 and §14 do not decide it — §14 commits only to absorbing the
+  gateway fee — so the refund is what was in escrow, which is the budget, and
+  the question stays where it belongs rather than being answered inside a
+  function.
+- **The chat is shown raw.** `message_raw.body` is what was typed and
+  `view_disputes` is the only thing that reads it; `messages.body` is what the
+  parties saw. A case about off-platform contact is unarguable from the first
+  and invisible in the second — which is why 0009 split them.
+- **Nothing raises a dispute.** Spec §4's step 8 gives the client accept, revise
+  or dispute; the third is not built, on either side. The queue is correct and
+  empty, and `resolve_dispute()` is lint-clean but has not been exercised at
+  runtime — the same position `cancel_payout_batch()` is in, and for the same
+  reason: exercising it would leave a permanently misleading row in what is an
+  audit trail.
 
 ## Money
 

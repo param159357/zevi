@@ -4997,6 +4997,23 @@ export type Database = {
         Args: { perm: Database["public"]["Enums"]["admin_permission"] }
         Returns: boolean
       }
+      apply_user_sanction: {
+        Args: {
+          p_admin_id: string
+          p_duration_days?: number
+          p_internal_note?: string
+          p_ip?: unknown
+          p_profile_id: string
+          p_reason: string
+          p_type: string
+        }
+        Returns: {
+          account_status: Database["public"]["Enums"]["account_status"]
+          detail: string
+          sanction_id: string
+          status: string
+        }[]
+      }
       auto_accept_deadline: {
         Args: { budget_paise: number; delivered_at: string }
         Returns: string
@@ -5105,6 +5122,7 @@ export type Database = {
       }
       is_active_worker: { Args: { uid?: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
+      is_admin_account: { Args: { p_profile_id: string }; Returns: boolean }
       is_conversation_participant: {
         Args: { conversation: string }
         Returns: boolean
@@ -5112,6 +5130,19 @@ export type Database = {
       is_dispute_party: { Args: { dispute: string }; Returns: boolean }
       is_job_client: { Args: { job: string }; Returns: boolean }
       is_job_participant: { Args: { job: string }; Returns: boolean }
+      lift_user_sanction: {
+        Args: {
+          p_admin_id: string
+          p_ip?: unknown
+          p_reason: string
+          p_sanction_id: string
+        }
+        Returns: {
+          account_status: Database["public"]["Enums"]["account_status"]
+          detail: string
+          status: string
+        }[]
+      }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }
       open_job_payment: {
         Args: {
@@ -5234,6 +5265,51 @@ export type Database = {
         Returns: {
           expires_at: string
           retry_after_seconds: number
+          status: string
+        }[]
+      }
+      resolve_dispute: {
+        Args: {
+          p_admin_id: string
+          p_decision_note: string
+          p_dispute_id: string
+          p_ip?: unknown
+          p_outcome: string
+          p_split_client_bps?: number
+        }
+        Returns: {
+          client_paise: number
+          detail: string
+          outcome: Database["public"]["Enums"]["dispute_outcome"]
+          status: string
+          worker_paise: number
+        }[]
+      }
+      retry_failed_payout: {
+        Args: {
+          p_admin_id: string
+          p_ip?: unknown
+          p_payout_id: string
+          p_reason: string
+        }
+        Returns: {
+          amount_paise: number
+          detail: string
+          earnings_returned: number
+          status: string
+        }[]
+      }
+      review_payout_batch: {
+        Args: {
+          p_admin_id: string
+          p_batch_id: string
+          p_decision: string
+          p_ip?: unknown
+          p_reason: string
+        }
+        Returns: {
+          batch_status: Database["public"]["Enums"]["payout_batch_status"]
+          detail: string
           status: string
         }[]
       }
