@@ -80,5 +80,5 @@ export const SHORTLIST_PAGE_SIZE = 50;
  */
 export const SHORTLIST_URL_TTL_SECONDS = 600;
 
-/** Search param `selectWorker` redirects back with. */
+/** Search param the shortlist navigates back with once a payment has settled. */
 export const SHORTLIST_PICKED_PARAM = "picked";

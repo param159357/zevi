@@ -27,7 +27,15 @@ export const COMMISSION_TAX_CODE = "gst_commission";
 export type Rates = {
   slabs: CommissionSlab[];
   taxRateBps: number;
+  /**
+   * Which `tax_rates` row that came from. `job_financials` stores it alongside
+   * the slab id so a job priced today is still explicable after the rate moves
+   * — "18%" in a column is a number, `tax_rate_id` is the row a CA can read.
+   */
+  taxRateId: string;
 };
+
+export type CommissionTaxRate = { id: string; rateBps: number };
 
 export async function loadCommissionSlabs(
   supabase: AnySupabaseClient,
@@ -54,15 +62,15 @@ export async function loadCommissionSlabs(
   return data;
 }
 
-export async function loadCommissionTaxBps(
+export async function loadCommissionTaxRate(
   supabase: AnySupabaseClient,
   at: Date = new Date(),
-): Promise<number> {
+): Promise<CommissionTaxRate> {
   const moment = at.toISOString();
 
   const { data, error } = await supabase
     .from("tax_rates")
-    .select("rate_bps")
+    .select("id, rate_bps")
     .eq("code", COMMISSION_TAX_CODE)
     .lte("effective_from", moment)
     .or(`effective_to.is.null,effective_to.gt.${moment}`)
@@ -75,7 +83,7 @@ export async function loadCommissionTaxBps(
     );
   }
 
-  return data.rate_bps;
+  return { id: data.id, rateBps: data.rate_bps };
 }
 
 /** Both halves at once, for a screen that quotes a price. */
@@ -83,10 +91,10 @@ export async function loadRates(
   supabase: AnySupabaseClient,
   at: Date = new Date(),
 ): Promise<Rates> {
-  const [slabs, taxRateBps] = await Promise.all([
+  const [slabs, tax] = await Promise.all([
     loadCommissionSlabs(supabase, at),
-    loadCommissionTaxBps(supabase, at),
+    loadCommissionTaxRate(supabase, at),
   ]);
 
-  return { slabs, taxRateBps };
+  return { slabs, taxRateBps: tax.rateBps, taxRateId: tax.id };
 }

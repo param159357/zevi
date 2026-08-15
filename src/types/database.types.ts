@@ -2662,6 +2662,7 @@ export type Database = {
           job_budget_paise: number
           job_id: string
           method: string | null
+          opt_in_id: string | null
           payer_ip: unknown
           razorpay_order_id: string | null
           razorpay_payment_id: string | null
@@ -2684,6 +2685,7 @@ export type Database = {
           job_budget_paise: number
           job_id: string
           method?: string | null
+          opt_in_id?: string | null
           payer_ip?: unknown
           razorpay_order_id?: string | null
           razorpay_payment_id?: string | null
@@ -2706,6 +2708,7 @@ export type Database = {
           job_budget_paise?: number
           job_id?: string
           method?: string | null
+          opt_in_id?: string | null
           payer_ip?: unknown
           razorpay_order_id?: string | null
           razorpay_payment_id?: string | null
@@ -2726,6 +2729,13 @@ export type Database = {
             columns: ["job_id"]
             isOneToOne: false
             referencedRelation: "jobs"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "payments_opt_in_id_fkey"
+            columns: ["opt_in_id"]
+            isOneToOne: false
+            referencedRelation: "job_opt_ins"
             referencedColumns: ["id"]
           },
         ]
@@ -4976,6 +4986,38 @@ export type Database = {
         Args: { p_worker_id: string }
         Returns: string
       }
+      fail_job_payment: {
+        Args: { p_payment_id: string; p_reason?: string }
+        Returns: {
+          amount_paise: number
+          captured_at: string | null
+          client_commission_paise: number
+          client_id: string
+          client_tax_paise: number
+          created_at: string
+          failed_at: string | null
+          failure_reason: string | null
+          gateway_fee_paise: number
+          gateway_tax_paise: number
+          id: string
+          job_budget_paise: number
+          job_id: string
+          method: string | null
+          opt_in_id: string | null
+          payer_ip: unknown
+          razorpay_order_id: string | null
+          razorpay_payment_id: string | null
+          refunded_paise: number
+          status: Database["public"]["Enums"]["payment_status"]
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "payments"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       is_active_worker: { Args: { uid?: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
       is_conversation_participant: {
@@ -4986,6 +5028,46 @@ export type Database = {
       is_job_client: { Args: { job: string }; Returns: boolean }
       is_job_participant: { Args: { job: string }; Returns: boolean }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }
+      open_job_payment: {
+        Args: {
+          p_actor_id: string
+          p_job_id: string
+          p_opt_in_id: string
+          p_price: Json
+          p_reuse_minutes?: number
+          p_slab_id: string
+          p_tax_rate_id: string
+        }
+        Returns: {
+          amount_paise: number
+          captured_at: string | null
+          client_commission_paise: number
+          client_id: string
+          client_tax_paise: number
+          created_at: string
+          failed_at: string | null
+          failure_reason: string | null
+          gateway_fee_paise: number
+          gateway_tax_paise: number
+          id: string
+          job_budget_paise: number
+          job_id: string
+          method: string | null
+          opt_in_id: string | null
+          payer_ip: unknown
+          razorpay_order_id: string | null
+          razorpay_payment_id: string | null
+          refunded_paise: number
+          status: Database["public"]["Enums"]["payment_status"]
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "payments"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       publish_job: {
         Args: {
           p_client_id: string
@@ -5038,6 +5120,28 @@ export type Database = {
       setting_int: {
         Args: { fallback: number; setting_key: string }
         Returns: number
+      }
+      settle_job_payment_and_assign: {
+        Args: { p_actor_id?: string; p_payment_id: string }
+        Returns: {
+          assigned_at: string
+          created_at: string
+          ended_at: string | null
+          ended_reason: string | null
+          id: string
+          job_id: string
+          opt_in_id: string | null
+          payment_id: string | null
+          source: Database["public"]["Enums"]["assignment_source"]
+          status: Database["public"]["Enums"]["assignment_status"]
+          worker_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "job_assignments"
+          isOneToOne: true
+          isSetofReturn: false
+        }
       }
       slab_for: {
         Args: { at_time?: string; budget_paise: number }

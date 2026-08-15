@@ -167,9 +167,6 @@ export type Shortlist = {
   truncated: boolean;
 };
 
-/** Picking redirects on success, so only the failure shape returns. */
-export type SelectWorkerResult = { ok: false; error: string };
-
 /** Exactly what the opt-in form holds. */
 export type OptInFormValues = {
   software: string;

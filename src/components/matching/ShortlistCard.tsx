@@ -18,11 +18,16 @@ export function ShortlistCard({
   worker,
   jobId,
   pickable,
+  clientTotalPaise,
 }: {
   worker: ShortlistWorker;
   jobId: string;
   /** The job is still open and this opt-in is still live. */
   pickable: boolean;
+  /** What picking costs, priced on the server. Null when the job could not be
+   *  priced, which is a broken deployment rather than a free hire — the pick
+   *  itself re-prices and refuses. */
+  clientTotalPaise: number | null;
 }) {
   const selected = worker.status === "selected";
   const passedOver = worker.status === "not_selected";
@@ -66,7 +71,12 @@ export function ShortlistCard({
       <Samples samples={worker.samples} />
 
       {pickable ? (
-        <PickWorker jobId={jobId} optInId={worker.optInId} workerName={worker.displayName} />
+        <PickWorker
+          jobId={jobId}
+          optInId={worker.optInId}
+          workerName={worker.displayName}
+          clientTotalPaise={clientTotalPaise}
+        />
       ) : null}
     </li>
   );

@@ -139,6 +139,45 @@ export function calculateCommission({
   };
 }
 
+/**
+ * What Zevi keeps once the gateway has taken its cut — the "Zevi net" column of
+ * spec §8's worked examples, and the line spec §9 builds a month on.
+ *
+ * An estimate, and only ever that. It applies the *quoted* gateway rate (2% plus
+ * GST on the fee) to what the client pays, because the real figure does not
+ * exist until Razorpay returns `fee` and `tax` on the captured payment, and
+ * differs by instrument. The ledger records the real one; this exists so a
+ * projection can be checked against the spec and so a finance screen can quote
+ * a number before settlement.
+ *
+ * GST is not in here on either side. It is collected from both parties and paid
+ * onward — a liability, never revenue — so it nets out of this figure entirely,
+ * exactly as spec §9's table says it does.
+ *
+ * The full gross is realised across two moments: the client's share when the
+ * card is charged, the worker's when escrow releases. This is the whole-job
+ * figure, so it is what a *completed* job earns, not what settlement earns.
+ */
+export function estimateNetRevenue(
+  breakdown: CommissionBreakdown,
+  { gatewayFeeBps, gatewayTaxBps }: { gatewayFeeBps: number; gatewayTaxBps: number },
+): {
+  grossPaise: number;
+  gatewayFeePaise: number;
+  gatewayTaxPaise: number;
+  netPaise: number;
+} {
+  const gatewayFeePaise = applyBps(breakdown.clientTotalPaise, gatewayFeeBps);
+  const gatewayTaxPaise = applyBps(gatewayFeePaise, gatewayTaxBps);
+
+  return {
+    grossPaise: breakdown.commissionPaise,
+    gatewayFeePaise,
+    gatewayTaxPaise,
+    netPaise: breakdown.commissionPaise - gatewayFeePaise - gatewayTaxPaise,
+  };
+}
+
 /** Nothing renders a price without a slab; this says why when one is missing. */
 export function priceJob({
   budgetPaise,

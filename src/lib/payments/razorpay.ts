@@ -1,0 +1,265 @@
+/**
+ * The Razorpay API, as much of it as selection needs.
+ *
+ * **Server-only.** Every function here reads `RAZORPAY_KEY_SECRET` through
+ * `serverEnv`. Importing this from a Client Component puts the secret in the
+ * browser bundle — the same rule, and the same reason, as `lib/supabase/server`.
+ *
+ * Three calls: create an order, read a payment back, capture it. No SDK — the
+ * official package is a CommonJS wrapper over the same three REST endpoints and
+ * brings its own HTTP stack into a runtime that already has `fetch`. A typed
+ * wrapper over the endpoints we actually use is smaller, and it is honest about
+ * what the responses contain instead of typing them as `any`.
+ *
+ * **Amounts are paise, both ways.** Razorpay's `amount` is the smallest currency
+ * unit, which for INR is what this codebase already stores, so nothing is
+ * converted at this boundary and nothing here may introduce a float.
+ *
+ * What this module does *not* do: decide anything. It reports what Razorpay
+ * said. Whether a payment is good enough to assign a job on is decided by the
+ * caller, against the amount recomputed from the job — never against a number
+ * that arrived from a browser, and never against this response alone.
+ *
+ * ### Route, and what is actually wired
+ *
+ * Razorpay Route splits a captured payment to *linked accounts* and can hold
+ * each split until released — which is the escrow half of spec §4. Creating a
+ * worker's linked account requires their KYC, and spec §6 puts KYC before the
+ * first payout rather than at signup, so no worker has one yet.
+ *
+ * So what runs today is the charge: the client's money is captured into the
+ * platform account and held there, with `escrow_holds` and the ledger as the
+ * record of whose it is. That is the same position a `{"on_hold": true}` Route
+ * transfer leaves the money in, minus the linked account. When KYC lands, the
+ * transfer is created at capture and released at acceptance; `transferForJob`
+ * below is the seam it slots into, and it throws rather than pretending.
+ */
+
+import { serverEnv } from "@/lib/env";
+import { PAYMENT_CURRENCY } from "@/lib/constants/payments";
+
+const API_BASE = "https://api.razorpay.com/v1";
+
+/** Razorpay is in the request path of a client pressing "pay". A hung socket
+ *  there is a client staring at a spinner, so the wait is bounded. */
+const REQUEST_TIMEOUT_MS = 15_000;
+
+export type RazorpayOrder = {
+  id: string;
+  amount: number;
+  amount_paid: number;
+  amount_due: number;
+  currency: string;
+  receipt: string | null;
+  status: "created" | "attempted" | "paid";
+  notes: Record<string, string>;
+  created_at: number;
+};
+
+export type RazorpayPayment = {
+  id: string;
+  order_id: string | null;
+  amount: number;
+  currency: string;
+  status: "created" | "authorized" | "captured" | "refunded" | "failed";
+  method: string | null;
+  captured: boolean;
+  /** Razorpay's cut, in paise. Null until the payment is captured. */
+  fee: number | null;
+  /** GST on that cut, in paise, and included in `fee` — not additional to it. */
+  tax: number | null;
+  error_code: string | null;
+  error_description: string | null;
+  notes: Record<string, string>;
+  created_at: number;
+};
+
+/**
+ * A failed Razorpay call, with enough on it to decide what to do next without
+ * re-reading the body.
+ *
+ * `retryable` separates "the network blinked" from "Razorpay says no". Retrying
+ * a 4xx just repeats the same refusal; retrying a timeout is the right move,
+ * because a timed-out capture may well have succeeded.
+ */
+export class RazorpayError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+  readonly retryable: boolean;
+
+  constructor(message: string, options: { status: number; code?: string | null }) {
+    super(message);
+    this.name = "RazorpayError";
+    this.status = options.status;
+    this.code = options.code ?? null;
+    // 0 is a network failure or a timeout: no answer, not a negative one.
+    this.retryable = options.status === 0 || options.status === 429 || options.status >= 500;
+  }
+}
+
+function authorizationHeader(): string {
+  const credentials = `${serverEnv.razorpayKeyId}:${serverEnv.razorpayKeySecret}`;
+  return `Basic ${Buffer.from(credentials, "utf8").toString("base64")}`;
+}
+
+/**
+ * One request, one place that knows how Razorpay reports a failure.
+ *
+ * Errors come back as `{"error": {"code": …, "description": …}}`, and the
+ * description is written for a developer, not a client — it is logged and
+ * carried on the exception, never rendered.
+ */
+async function request<T>(
+  path: string,
+  init: { method: "GET" | "POST"; body?: unknown },
+): Promise<T> {
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: init.method,
+      headers: {
+        Authorization: authorizationHeader(),
+        "Content-Type": "application/json",
+      },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      cache: "no-store",
+    });
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : "unknown error";
+    throw new RazorpayError(`Could not reach Razorpay (${init.method} ${path}): ${reason}`, {
+      status: 0,
+    });
+  }
+
+  const text = await response.text();
+
+  let payload: unknown;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    const error =
+      payload && typeof payload === "object" && "error" in payload
+        ? (payload as { error: { code?: string; description?: string } }).error
+        : null;
+
+    throw new RazorpayError(
+      `Razorpay refused ${init.method} ${path}: ${error?.description ?? response.statusText}`,
+      { status: response.status, code: error?.code ?? null },
+    );
+  }
+
+  if (payload === null) {
+    throw new RazorpayError(`Razorpay returned an empty body for ${init.method} ${path}`, {
+      status: response.status,
+    });
+  }
+
+  return payload as T;
+}
+
+/**
+ * The order a checkout opens against.
+ *
+ * `receipt` is our payment row's id, so a Razorpay dashboard row can be traced
+ * back to a job without a lookup table. The notes carry the job, opt-in and
+ * worker for the webhook's benefit — a webhook that arrives after the client
+ * closed their tab has the notes and nothing else to go on. They are a hint for
+ * finding the payment row, never a claim the payment row has to believe.
+ */
+export async function createOrder({
+  amountPaise,
+  receipt,
+  notes,
+}: {
+  amountPaise: number;
+  receipt: string;
+  notes: Record<string, string>;
+}): Promise<RazorpayOrder> {
+  if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+    throw new RazorpayError(`Refusing to create an order for ${amountPaise} paise`, {
+      status: 0,
+    });
+  }
+
+  return request<RazorpayOrder>("/orders", {
+    method: "POST",
+    body: {
+      amount: amountPaise,
+      currency: PAYMENT_CURRENCY,
+      receipt,
+      notes,
+      // Capture is ours to do, once the amount has been checked against the job
+      // server-side. Auto-capture would take the money before that check.
+      payment_capture: 0,
+    },
+  });
+}
+
+export async function fetchPayment(paymentId: string): Promise<RazorpayPayment> {
+  return request<RazorpayPayment>(`/payments/${encodeURIComponent(paymentId)}`, {
+    method: "GET",
+  });
+}
+
+export async function fetchOrder(orderId: string): Promise<RazorpayOrder> {
+  return request<RazorpayOrder>(`/orders/${encodeURIComponent(orderId)}`, { method: "GET" });
+}
+
+/**
+ * Take the authorised money.
+ *
+ * `amountPaise` must equal what was authorised — Razorpay rejects a mismatch,
+ * which is a second check on top of ours and a welcome one.
+ *
+ * Capturing twice is not an error worth surfacing. Razorpay answers
+ * `BAD_REQUEST_ERROR` on an already-captured payment, and a retried settlement
+ * reaching that point means the first attempt got further than it managed to
+ * record. So this re-reads the payment and returns it if it is genuinely
+ * captured, and only then decides the refusal was real.
+ */
+export async function capturePayment({
+  paymentId,
+  amountPaise,
+}: {
+  paymentId: string;
+  amountPaise: number;
+}): Promise<RazorpayPayment> {
+  try {
+    return await request<RazorpayPayment>(
+      `/payments/${encodeURIComponent(paymentId)}/capture`,
+      { method: "POST", body: { amount: amountPaise, currency: PAYMENT_CURRENCY } },
+    );
+  } catch (error) {
+    if (!(error instanceof RazorpayError) || error.retryable) throw error;
+
+    const payment = await fetchPayment(paymentId);
+    if (payment.status === "captured" && payment.amount === amountPaise) return payment;
+
+    throw error;
+  }
+}
+
+/**
+ * Route's other half — the transfer to a worker's linked account.
+ *
+ * Not built, and not stubbed to look built. A worker has no linked account
+ * because they have no KYC (spec §6 puts it before the first payout), so there
+ * is no id to transfer to. Escrow is recorded in `escrow_holds` and the ledger
+ * meanwhile, which is where the money's ownership actually lives.
+ *
+ * Kept here so the seam is visible: when KYC lands, this creates the transfer
+ * with `on_hold: true` at capture and releases it at acceptance, and the ledger
+ * entries it already writes stop being the only record.
+ */
+export async function transferForJob(): Promise<never> {
+  throw new Error(
+    "Route transfers need worker linked accounts, which need KYC (spec §6). " +
+      "Escrow is held on the platform account and recorded in escrow_holds until then.",
+  );
+}

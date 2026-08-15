@@ -3,7 +3,7 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, auth built, jobs posted, opted into, and assigned.**
+**Status: schema applied, auth built, jobs posted, opted into, paid for and assigned.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
@@ -13,10 +13,12 @@ captions and submit them, and an admin can approve, flag or reject from the
 console queue. An approved worker sees the category-filtered feed, reads a brief
 and opts in with the three short fields. The client reads that list, sorted by
 rating, with each worker's samples beside their three answers, and picks one
-through `claim_job_assignment()`. Nothing beyond that: no delivery, no chat, no
-ratings, no KYC. **Selection takes no money** — Razorpay is unwired, so a job is
-assigned with a null `payment_id` and no escrow behind it, which is the one place
-the build knowingly diverges from spec §4. SES, Sentry and SMS are unwired too,
+— which charges their card through Razorpay, holds the budget in escrow and
+writes the ledger entries, in the same transaction that assigns the job.
+
+Nothing beyond that: no delivery, no chat, no ratings, no KYC — and **no way to
+get money back out**. Escrow release, payouts and refunds do not exist, so a
+captured payment can only be settled forward. SES, Sentry and SMS are unwired,
 and uploads sit in Supabase Storage until R2 replaces it.
 
 ---
@@ -28,6 +30,7 @@ npm run dev      # dev server on :3000 (Turbopack)
 npm run build    # production build
 npm run start    # serve the production build
 npm run lint     # eslint
+npm test         # vitest — the commission calculator and the payment signatures
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -51,6 +54,18 @@ cp /tmp/t src/types/database.types.ts
 Copy `.env.example` to `.env.local` before the first run. The app throws a named
 error on a missing variable rather than failing obscurely.
 
+**A function that returns one row, not a set**, gets a `SetofOptions` block in
+the generated types with `isSetofReturn: false` — `open_job_payment`,
+`settle_job_payment_and_assign` and `fail_job_payment` all do. That is the tell
+that PostgREST hands back the composite directly, so **do not chain
+`.single()`** on those calls; the result type collapses to `never` if you do.
+`publish_job` and `slab_for` are the other shape, and their `Returns` is an
+array.
+
+The generator also types an optional argument as `p_actor_id?: string`, never
+`string | null`. To pass "no value", omit the key — `...(actorId ? { p_actor_id:
+actorId } : {})` — and let the function's own `default null` apply.
+
 ---
 
 ## Stack
@@ -63,7 +78,7 @@ error on a missing variable rather than failing obscurely.
 | Styling | Tailwind CSS v4 | CSS-first config in `globals.css`, no `tailwind.config.js` |
 | DB + Auth | Supabase (Postgres) | `@supabase/supabase-js`, `@supabase/ssr` |
 | Files | Cloudflare R2 | not wired up |
-| Payments | Razorpay Route | not wired up |
+| Payments | Razorpay | charge + escrow wired; Route transfers need KYC |
 | Email | Amazon SES | not wired up |
 | Errors | Sentry | not wired up |
 | Hosting | Vercel + Cloudflare | |
@@ -98,6 +113,7 @@ src/
 │   ├── matching/        feed, opt-ins, shortlist: actions · queries · shortlist · validation · types
 │   ├── admin/           console guard + approval queue: session · actions · queries
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
+│   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
@@ -162,7 +178,7 @@ Rules:
 
 ### Schema
 
-28 migrations, 81 tables, RLS on every one. What to know before writing a query:
+29 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -183,6 +199,14 @@ Rules:
   `job_financials` freezes a job's price at assignment and cannot be updated.
 - **Assignment goes through `claim_job_assignment()`**, which takes
   `SELECT … FOR UPDATE` on the job row. Never INSERT `job_assignments` directly.
+  Since 0029 the only caller is `settle_job_payment_and_assign()`, so an
+  assignment always has a captured payment and a balanced ledger behind it.
+- **Cast every enum literal in a function.** 0025, 0026 and 0029 are all the
+  same bug: a `case` or a parameter-built `values` row containing bare literals
+  resolves to `text`, and Postgres will not coerce text to an enum in
+  assignment context — `42804`, at runtime, on a path nobody had reached yet.
+  0029 fixed the last two in `claim_job_assignment()`. Write
+  `'client'::public.party_role`, always.
 - **Posting goes through `publish_job()`** (0022), the same way: it locks the
   row, decides open vs `pending_moderation`, and writes the moderation and
   classification queue rows in the same transaction. Never move a job out of
@@ -371,21 +395,71 @@ Spec §5's other half, and the moment the job stops being a posting.
   URLs — shared with the approval queue, which has the same shape — and only for
   keys the client's own RLS-scoped query returned. Approved samples only, in the
   job's category only.
-- **Picking runs under the client's own key, not the service role.**
-  `claim_job_assignment()` is granted to `authenticated` precisely so
-  `auth.uid()` is a real caller it can check against `jobs.client_id`. It takes
-  the row lock, flips the other opt-ins to `not_selected` and writes the
-  `job_events` row in one transaction. The reads in `selectWorker()` exist to
-  give a decent sentence before that happens; the lock is what decides.
-- **Payment is missing here, not skipped.** Spec §4 charges at selection, into
-  escrow. Until Razorpay Route is wired, `selectWorker()` passes no
-  `payment_id` — a shape the function already allows for the rehire and admin
-  paths — and the screen says plainly that nothing is being charged rather than
-  quoting a total it will not collect. When the gateway lands, capture first,
-  pass the id in, ledger entries in the same transaction.
+- **Picking is paying**, so it lives in `lib/payments/`, not `lib/matching/`.
+  See the section below.
 - Not built yet: the client cannot cancel or unassign from this screen, and
   nothing notifies the worker they were picked (`shortlist_ready` and the rest
   of `notification_type` are still unused).
+
+---
+
+## Payment at selection
+
+Spec §4, step 5: "client picks one, payment happens here, into escrow." One
+moment, four things that must all happen or none of them.
+
+```
+startJobPayment()   price → freeze → open order      (nothing charged yet)
+   ↓ Razorpay Checkout, in the client's browser
+confirmJobPayment() verify → fetch → capture → settle
+   ↓                                     ↑
+/api/webhooks/razorpay ──────────────────┘   the backstop for a closed tab
+```
+
+- **The browser decides nothing.** It names a payment row, a Razorpay payment
+  id and a signature. The order id is read from *our* row (so a valid signature
+  for someone else's order proves nothing), the amount is recomputed from the
+  job, and the worker comes off the opt-in the payment was raised against —
+  all written before a payment form was shown.
+- **Settlement is one database transaction.** `settle_job_payment_and_assign()`
+  flips the payment to captured, opens the escrow hold, writes the balanced
+  `payment_captured` ledger transaction and calls `claim_job_assignment()`
+  under the same row lock. A captured payment with no assignment is a client
+  charged for nothing; an assignment with no ledger entries is a worker owed
+  money nobody can account for. Neither is representable.
+- **It takes no amounts.** Every figure comes from rows only server-side code
+  wrote — `job_financials` for the frozen price, `payments` for the gateway's
+  real cut. There is no number in its signature to get wrong or to lie about.
+- **Selection moved to the service-role side**, reversing the note this file
+  used to carry about `claim_job_assignment` running under the client's own
+  key. It is a money-moving write now, and this schema already has a rule for
+  those (see the Supabase section). The acting client is passed as
+  `p_actor_id`, checked against `jobs.client_id` under the lock, and recorded
+  on the `job.paid` event — they are still who did it, just not who executes it.
+- **Idempotent on purpose.** The browser and the `payment.captured` webhook both
+  settle by the same path, in either order; `ledger_transactions.idempotency_key`
+  is what makes the second one harmless. That is what the column is for.
+- **Escrow holds the budget, not the client's total.** The client's commission
+  and GST are recognised at capture because they are earned then; the worker's
+  own share is still inside escrow and comes out at release. So spec §8's "Zevi
+  gross" is realised across two moments, and only the first one exists.
+- **Lock order is jobs, then payments**, in all three functions. Two that
+  disagree deadlock the first time a client reloads checkout while a webhook
+  lands.
+- **Razorpay Route's transfer half is not wired**, and is not stubbed to look
+  wired. Transfers go to *linked accounts*, which need worker KYC, which spec §6
+  puts before the first payout rather than at signup. So the money is captured
+  into the platform account and held there, with `escrow_holds` and the ledger
+  as the record of whose it is — the same position an `on_hold` Route transfer
+  leaves it in, minus the linked account. `transferForJob()` in
+  `lib/payments/razorpay.ts` is the seam, and it throws.
+- **No money comes back out yet.** No release, no payout, no refund. If
+  settlement fails after capture the client is charged and unassigned; the UI
+  says so and refuses to offer a retry, and the log has the payment id. Building
+  refunds is what closes that.
+- Without `NEXT_PUBLIC_RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` the shortlist
+  disables picking and says why. There is deliberately no assign-without-paying
+  path left, in any environment.
 
 ---
 
@@ -397,7 +471,11 @@ Spec §5's other half, and the moment the job stops being a posting.
   [src/lib/money/commission.ts](src/lib/money/commission.ts), with the fixed
   limits in `lib/constants/` and the versioned rates loaded by
   `lib/money/rates.ts`. Never inline a slab percentage in a component. Its
-  output is checked against every worked example in SPEC §8.
+  output is checked against every worked example in SPEC §8 — all six columns
+  of all five rows, plus the ₹149 line-by-line table — in
+  [commission.test.ts](src/lib/money/commission.test.ts). Those tests hold a
+  copy of the seeded slabs on purpose: change a rate in the seed and they fail
+  and name the spec row you broke.
 - **Never trust an amount sent from the browser.** Recompute server-side from
   the job record before charging or paying anyone.
 - Fees, commission, and GST are always separate visible lines, never folded into

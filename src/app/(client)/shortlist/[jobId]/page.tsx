@@ -7,6 +7,7 @@ import { ShortlistCard } from "@/components/matching/ShortlistCard";
 import { Alert } from "@/components/ui/Alert";
 import { requireRole } from "@/lib/auth/session";
 import { JOB_ROUTES } from "@/lib/constants/jobs";
+import { isRazorpayConfigured } from "@/lib/env";
 import { SHORTLIST_PAGE_SIZE, SHORTLIST_PICKED_PARAM } from "@/lib/constants/matching";
 import { PICKABLE_OPT_IN_STATUSES, loadShortlist } from "@/lib/matching/shortlist";
 import type { Shortlist } from "@/lib/matching/types";
@@ -49,6 +50,16 @@ export default async function ShortlistPage({
     (worker) => worker.workerId === query[SHORTLIST_PICKED_PARAM] && worker.status === "selected",
   );
 
+  // Priced once for the whole screen: the breakdown above the list and the
+  // figure on every card's confirm step are the same calculation, and the
+  // charge itself re-runs it server-side before an order is created.
+  const { slabs, taxRateBps } = await loadRates(supabase);
+  const price = priceJob({ budgetPaise: shortlist.budgetPaise, slabs, taxRateBps });
+
+  // Payment is not optional — spec §4 charges at selection — so a deployment
+  // without gateway keys says so rather than quietly assigning jobs for free.
+  const canPay = isRazorpayConfigured();
+
   return (
     <div className="space-y-8">
       <div className="space-y-3">
@@ -90,8 +101,24 @@ export default async function ShortlistPage({
 
       <StatusNotice shortlist={shortlist} />
 
-      {open && shortlist.workers.length > 0 ? (
-        <Price budgetPaise={shortlist.budgetPaise} />
+      {open && shortlist.workers.length > 0 && !canPay ? (
+        <Alert tone="error">
+          Card payments aren&apos;t switched on for this deployment, so nobody can be
+          picked yet. Set the Razorpay keys from <code>.env.example</code> and reload.
+        </Alert>
+      ) : null}
+
+      {open && shortlist.workers.length > 0 && price ? (
+        <FeeBreakdown
+          price={price}
+          note={
+            // Spec §4: "client picks one, payment happens here, into escrow."
+            <>
+              You&apos;re charged when you pick someone, and the money is held until you
+              accept their work.
+            </>
+          }
+        />
       ) : null}
 
       {shortlist.workers.length > 0 ? (
@@ -113,7 +140,10 @@ export default async function ShortlistPage({
                 key={worker.optInId}
                 worker={worker}
                 jobId={shortlist.jobId}
-                pickable={open && PICKABLE_OPT_IN_STATUSES.includes(worker.status)}
+                pickable={
+                  open && canPay && PICKABLE_OPT_IN_STATUSES.includes(worker.status)
+                }
+                clientTotalPaise={price?.clientTotalPaise ?? null}
               />
             ))}
           </ul>
@@ -169,36 +199,4 @@ function StatusNotice({ shortlist }: { shortlist: Shortlist }) {
   }
 
   return null;
-}
-
-/**
- * What picking someone costs — spec §5: "fee shown as a separate line, never
- * hidden". Recomputed here from the job's own budget and the rates in effect,
- * never from anything the page was handed.
- */
-async function Price({ budgetPaise }: { budgetPaise: number }) {
-  const supabase = await createClient();
-  const { slabs, taxRateBps } = await loadRates(supabase);
-  const price = priceJob({ budgetPaise, slabs, taxRateBps });
-
-  // `slabFor` returning null means a hole in `commission_slabs`, which is a
-  // broken deployment rather than a pricing edge case — but it is not a reason
-  // to refuse a client the shortlist they came for.
-  if (!price) return null;
-
-  return (
-    <FeeBreakdown
-      price={price}
-      note={
-        // Spec §4 puts the charge exactly here — "client picks one, payment
-        // happens here, into escrow" — and the gateway is not wired up yet. The
-        // screen says what actually happens rather than quoting a total nobody
-        // is collecting. See `selectWorker` in lib/matching/actions.ts.
-        <>
-          Card payment isn&apos;t switched on yet, so nothing is charged when you pick.
-          This is what the job will cost once it is.
-        </>
-      }
-    />
-  );
 }
