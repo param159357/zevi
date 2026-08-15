@@ -5,6 +5,7 @@ import { Alert } from "@/components/ui/Alert";
 import { requireRole } from "@/lib/auth/session";
 import { ELIGIBILITY_HOURS } from "@/lib/constants/payouts";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
+import type { KycStatus } from "@/lib/kyc/types";
 import { cycleFor } from "@/lib/payouts/cycle";
 import { payableFrom } from "@/lib/payouts/eligibility";
 import { loadEarnings } from "@/lib/payouts/queries";
@@ -27,7 +28,10 @@ export default async function WorkerEarningsPage() {
   const context = await requireRole("worker");
   const supabase = await createClient();
 
-  const { lines, totals, nextRun, canBePaid } = await loadEarnings(supabase, context.user.id);
+  const { lines, totals, nextRun, canBePaid, kycStatus, kycAvailable } = await loadEarnings(
+    supabase,
+    context.user.id,
+  );
 
   return (
     <div className="space-y-8">
@@ -55,18 +59,12 @@ export default async function WorkerEarningsPage() {
 
       {/*
         The honest version of "why hasn't this arrived". Spec §6 puts KYC before
-        the first payout rather than at signup, and it is not built — so rather
-        than showing a date nothing can keep, the screen says what is actually
-        in the way. Everything already earned keeps rolling into the next cycle
-        until it can be sent.
+        the first payout rather than at signup, so for most workers this is the
+        one thing standing between an earning and a bank account — and the banner
+        names which step they are on rather than saying "processing". Shown even
+        with nothing earned yet, so a worker can get it out of the way early.
       */}
-      {lines.length > 0 && !canBePaid ? (
-        <Alert tone="info">
-          We can&apos;t send money yet — bank verification isn&apos;t switched on, so no
-          payout destination has been confirmed for your account. Your earnings stay yours
-          and roll into the next cycle; nothing expires.
-        </Alert>
-      ) : null}
+      {canBePaid ? null : <VerificationNotice status={kycStatus} available={kycAvailable} />}
 
       {lines.length === 0 ? (
         <div className="border-border space-y-3 rounded-xl border border-dashed px-4 py-8 text-center">
@@ -117,6 +115,73 @@ export default async function WorkerEarningsPage() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Why money is not moving, and the one link that changes it.
+ *
+ * Every branch names the specific step, for the same reason `describeTiming`
+ * does: "processing" is what a worker chasing an unpaid balance already suspects
+ * and cannot act on. Only two of these are actionable, and only those two carry
+ * a link — offering "verify your account" to someone already blocked would be a
+ * door that goes nowhere.
+ */
+function VerificationNotice({
+  status,
+  available,
+}: {
+  status: KycStatus | null;
+  available: boolean;
+}) {
+  if (!available) {
+    return (
+      <Alert tone="info">
+        We can&apos;t send money yet — bank verification isn&apos;t switched on. Your
+        earnings stay yours and roll into the next cycle; nothing expires.
+      </Alert>
+    );
+  }
+
+  if (status === "blocked") {
+    return (
+      <Alert tone="error">
+        We couldn&apos;t confirm the account you gave us belongs to you, so payouts are on
+        hold.{" "}
+        <Link href={WORKER_ROUTES.kyc} className="underline underline-offset-4">
+          See what happened
+        </Link>
+        .
+      </Alert>
+    );
+  }
+
+  if (status === "verifying" || status === "submitted") {
+    return (
+      <Alert tone="info">
+        We&apos;re confirming your account with your bank.{" "}
+        <Link
+          href={WORKER_ROUTES.kyc}
+          className="text-foreground underline underline-offset-4"
+        >
+          Check where it&apos;s got to
+        </Link>
+        .
+      </Alert>
+    );
+  }
+
+  return (
+    <Alert tone="info">
+      Before your first payout we need to confirm the account it goes to.{" "}
+      <Link
+        href={WORKER_ROUTES.kyc}
+        className="text-foreground underline underline-offset-4"
+      >
+        {status === "rejected" ? "Try again" : "Set that up"}
+      </Link>{" "}
+      — it takes a couple of minutes. Nothing you&apos;ve earned expires meanwhile.
+    </Alert>
   );
 }
 

@@ -4631,17 +4631,21 @@ export type Database = {
           created_at: string
           date_of_birth: string | null
           duplicate_pan_flagged: boolean
+          last_failure_code: string | null
+          last_failure_reason: string | null
           legal_name: string | null
           name_match_passed: boolean | null
           name_match_score: number | null
           pan_hash: string | null
           pan_last4: string | null
           pan_registered_name: string | null
+          pending_method_id: string | null
           penny_drop_name: string | null
           provider_reference: string | null
           reviewed_at: string | null
           reviewed_by: string | null
           status: Database["public"]["Enums"]["kyc_status"]
+          submitted_at: string | null
           updated_at: string
           verified_at: string | null
           worker_id: string
@@ -4652,17 +4656,21 @@ export type Database = {
           created_at?: string
           date_of_birth?: string | null
           duplicate_pan_flagged?: boolean
+          last_failure_code?: string | null
+          last_failure_reason?: string | null
           legal_name?: string | null
           name_match_passed?: boolean | null
           name_match_score?: number | null
           pan_hash?: string | null
           pan_last4?: string | null
           pan_registered_name?: string | null
+          pending_method_id?: string | null
           penny_drop_name?: string | null
           provider_reference?: string | null
           reviewed_at?: string | null
           reviewed_by?: string | null
           status?: Database["public"]["Enums"]["kyc_status"]
+          submitted_at?: string | null
           updated_at?: string
           verified_at?: string | null
           worker_id: string
@@ -4673,22 +4681,33 @@ export type Database = {
           created_at?: string
           date_of_birth?: string | null
           duplicate_pan_flagged?: boolean
+          last_failure_code?: string | null
+          last_failure_reason?: string | null
           legal_name?: string | null
           name_match_passed?: boolean | null
           name_match_score?: number | null
           pan_hash?: string | null
           pan_last4?: string | null
           pan_registered_name?: string | null
+          pending_method_id?: string | null
           penny_drop_name?: string | null
           provider_reference?: string | null
           reviewed_at?: string | null
           reviewed_by?: string | null
           status?: Database["public"]["Enums"]["kyc_status"]
+          submitted_at?: string | null
           updated_at?: string
           verified_at?: string | null
           worker_id?: string
         }
         Relationships: [
+          {
+            foreignKeyName: "worker_kyc_pending_method_id_fkey"
+            columns: ["pending_method_id"]
+            isOneToOne: false
+            referencedRelation: "payout_methods"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "worker_kyc_reviewed_by_fkey"
             columns: ["reviewed_by"]
@@ -5134,6 +5153,23 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      open_worker_kyc_attempt: {
+        Args: {
+          p_dob: string
+          p_legal_name: string
+          p_pan_hash?: string
+          p_pan_last4?: string
+          p_worker_id: string
+        }
+        Returns: {
+          attempts_left: number
+          attempts_used: number
+          detail: string
+          duplicate_pan: boolean
+          pan_required: boolean
+          status: string
+        }[]
+      }
       publish_job: {
         Args: {
           p_client_id: string
@@ -5146,6 +5182,22 @@ export type Database = {
           review_trigger: string
           status: string
         }[]
+      }
+      record_worker_kyc_destination: {
+        Args: {
+          p_account_last4?: string
+          p_bank_name?: string
+          p_contact_id?: string
+          p_destination_hash: string
+          p_fund_account_id?: string
+          p_ifsc?: string
+          p_label?: string
+          p_method_type: Database["public"]["Enums"]["payout_method_type"]
+          p_provider_reference: string
+          p_upi_masked?: string
+          p_worker_id: string
+        }
+        Returns: string
       }
       release_matured_earning_holds: { Args: never; Returns: number }
       request_job_revision: {
@@ -5200,6 +5252,19 @@ export type Database = {
           worker_id: string
         }[]
       }
+      review_worker_kyc: {
+        Args: {
+          p_decision: string
+          p_reason: string
+          p_reviewer_id: string
+          p_worker_id: string
+        }
+        Returns: {
+          detail: string
+          kyc_status: Database["public"]["Enums"]["kyc_status"]
+          status: string
+        }[]
+      }
       setting_bigint: {
         Args: { fallback: number; setting_key: string }
         Returns: number
@@ -5233,6 +5298,25 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      settle_worker_kyc: {
+        Args: {
+          p_failure_code?: string
+          p_name_match_score?: number
+          p_outcome: string
+          p_pan_registered_name?: string
+          p_penny_drop_name?: string
+          p_reason?: string
+          p_worker_id: string
+        }
+        Returns: {
+          attempts_left: number
+          attempts_used: number
+          detail: string
+          in_review: boolean
+          kyc_status: Database["public"]["Enums"]["kyc_status"]
+          status: string
+        }[]
       }
       slab_for: {
         Args: { at_time?: string; budget_paise: number }
@@ -5314,6 +5398,10 @@ export type Database = {
           attempts_left: number
           status: string
         }[]
+      }
+      worker_lifetime_earnings_paise: {
+        Args: { p_worker_id: string }
+        Returns: number
       }
       worker_samples_locked: { Args: { uid?: string }; Returns: boolean }
       worker_works_in_category: { Args: { cat: string }; Returns: boolean }

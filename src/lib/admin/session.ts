@@ -49,3 +49,34 @@ export async function requireAdmin(permission: AdminPermission): Promise<AuthCon
 
   return context;
 }
+
+/**
+ * Membership only — for the console's shell, which has to render before any one
+ * queue's permission is relevant.
+ *
+ * The layout used to demand `review_workers`, which was fine while worker
+ * approvals was the only module and wrong the moment a second one landed: the
+ * seeded `finance` role carries `manage_payouts` and `view_finance` and would
+ * have 404'd on the whole console, KYC queue included. Each page still names the
+ * permission it needs, and the policies behind them still decide what the
+ * queries return.
+ */
+export const isAdmin = cache(async (): Promise<boolean> => {
+  const supabase = await createClient();
+
+  const { data, error } = await supabase.rpc("is_admin");
+
+  if (error) throw new Error(`is_admin() failed: ${error.message}`);
+
+  return data === true;
+});
+
+export async function requireAnyAdmin(): Promise<AuthContext> {
+  const context = await requireUser();
+
+  if (context.isBlocked) redirect(`${AUTH_ROUTES.login}?notice=blocked`);
+
+  if (!(await isAdmin())) notFound();
+
+  return context;
+}

@@ -76,6 +76,39 @@ export function isRazorpayConfigured(): boolean {
 }
 
 /**
+ * True when a worker can actually be put through KYC (spec §6): Razorpay's keys,
+ * the RazorpayX account the penny drop is debited from, and the pepper the
+ * stored PAN and account hashes are keyed with.
+ *
+ * Read by the KYC screen, which says plainly that verification is unavailable
+ * rather than taking a worker's PAN and bank details and doing nothing with
+ * them. Collecting identity documents you cannot verify is worse than not
+ * collecting them.
+ */
+export function isKycConfigured(): boolean {
+  return Boolean(
+    isRazorpayConfigured() &&
+      process.env.RAZORPAY_X_ACCOUNT_NUMBER &&
+      process.env.KYC_HASH_PEPPER,
+  );
+}
+
+/**
+ * True when the PAN half of spec §6's verification can run.
+ *
+ * Separate from `isKycConfigured` because it gates a different thing. Razorpay's
+ * PAN check is sold under contract rather than published with the payment APIs,
+ * so its endpoint is configuration here instead of a constant — and without it
+ * the platform can still verify a worker whose lifetime earnings are under the
+ * ₹5,000 line, which is exactly the case spec §6 says UPI alone covers. Past
+ * that line a PAN is mandatory, and `submitWorkerKyc` refuses rather than
+ * recording an unverified one.
+ */
+export function isPanVerificationConfigured(): boolean {
+  return Boolean(isRazorpayConfigured() && process.env.RAZORPAY_PAN_VERIFY_URL);
+}
+
+/**
  * Server-only. Importing this from a Client Component leaks secrets into the
  * browser bundle — don't.
  */
@@ -120,5 +153,42 @@ export const serverEnv = {
    */
   get cronSecret() {
     return required("CRON_SECRET", process.env.CRON_SECRET);
+  },
+  /**
+   * The RazorpayX account a penny drop is debited from. Razorpay's fund account
+   * validation names it as `source_account_number`; it is the platform's own
+   * current account, not anything belonging to a worker.
+   */
+  get razorpayXAccountNumber() {
+    return required(
+      "RAZORPAY_X_ACCOUNT_NUMBER",
+      process.env.RAZORPAY_X_ACCOUNT_NUMBER,
+    );
+  },
+  /**
+   * Razorpay's PAN verification endpoint, in full.
+   *
+   * A URL rather than a path because, unlike the payment APIs, this one is not
+   * published — it is enabled per merchant and the host and version come with
+   * the contract. Guessing it would mean shipping code that 404s in production
+   * and looks wired until the day someone crosses ₹5,000.
+   */
+  get razorpayPanVerifyUrl() {
+    return required("RAZORPAY_PAN_VERIFY_URL", process.env.RAZORPAY_PAN_VERIFY_URL);
+  },
+  /**
+   * The key the stored PAN and payout-destination hashes are HMAC'd with.
+   *
+   * It is not in the database on purpose. `worker_kyc.pan_hash` exists to spot
+   * one PAN on two accounts and `payout_methods.destination_hash` to spot two
+   * accounts paying into one place — neither needs to be reversible, and a plain
+   * digest of a PAN is a space small enough to enumerate. With the pepper held
+   * here, a copy of the database is not a copy of anyone's PAN.
+   *
+   * Changing it orphans every existing hash: duplicates stop being detectable
+   * across the change, and nothing else breaks.
+   */
+  get kycHashPepper() {
+    return required("KYC_HASH_PEPPER", process.env.KYC_HASH_PEPPER);
   },
 };

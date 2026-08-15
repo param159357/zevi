@@ -96,10 +96,14 @@ export const WORKER_ROUTES = {
   work: "/worker/work",
   deliver: (jobId: string) => `/worker/work/${jobId}`,
   earnings: "/worker/earnings",
+  /** Spec §6 puts KYC before the first payout, not at signup, so it sits under
+   *  earnings rather than in the onboarding checklist. */
+  kyc: "/worker/kyc",
 } as const;
 
 export const ADMIN_ROUTES = {
   home: "/admin",
   approvals: "/admin/approvals",
   application: (applicationId: string) => `/admin/approvals/${applicationId}`,
+  kyc: "/admin/kyc",
 } as const;

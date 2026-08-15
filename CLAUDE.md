@@ -3,7 +3,7 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: a job runs end to end, and the payout cycle now gathers what it earned.**
+**Status: a job runs end to end, and a verified worker can now be paid.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
@@ -26,13 +26,21 @@ closes Wednesday and Sunday midnight IST, and every matured unheld earning is
 gathered into one payout per worker. A worker sees their balances and the date
 they will be paid.
 
+And a worker can now prove who they are. KYC takes a name, a date of birth, a
+PAN and a bank account or UPI id, sends ₹1 through Razorpay's penny drop to
+learn whose name is really on the account, compares that with the PAN registry's
+and with what they typed, and blocks — permanently, with no override — when they
+disagree. A pass writes a verified `payout_methods` row, which is exactly what
+`build_payout_batch()` has been skipping every worker for want of. Three failed
+attempts and a duplicate PAN both land in a new console queue.
+
 Nothing beyond that: no chat, no ratings, no disputes — and **money still cannot
-leave the platform account**. The batch stops one step short of a bank transfer,
-because `payouts.payout_method_id` needs a verified destination and **KYC is not
-built**, so every worker is skipped and their earnings roll forward. That is the
-single thing standing between this and a worker being paid. Refunds do not exist
-either. SES, Sentry and SMS are unwired, and uploads sit in Supabase Storage
-until R2 replaces it.
+leave the platform account**. The batch assembles and stops: the disbursement
+step that turns a `payouts` row into a bank transfer, writes `payout_paid` to the
+ledger and handles a failure is not built. That is now the single thing standing
+between this and a worker holding the money. Refunds do not exist either. SES,
+Sentry and SMS are unwired, and uploads sit in Supabase Storage until R2 replaces
+it.
 
 ---
 
@@ -43,7 +51,7 @@ npm run dev      # dev server on :3000 (Turbopack)
 npm run build    # production build
 npm run start    # serve the production build
 npm run lint     # eslint
-npm test         # vitest — the commission calculator and the payment signatures
+npm test         # vitest — commission, payment signatures, payout calendar, KYC names
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -125,8 +133,8 @@ src/
 │   ├── (marketing)/     public pages — landing, legal, category browse
 │   ├── (auth)/          signup, login, the two verification steps
 │   ├── (client)/        job posters: post, shortlist, review, dashboard
-│   ├── (worker)/        workers: feed, opt-in, deliver, earnings
-│   ├── (admin)/         work queue: approvals, disputes, payouts, users
+│   ├── (worker)/        workers: feed, opt-in, deliver, earnings, KYC
+│   ├── (admin)/         work queue: approvals, KYC, disputes, payouts, users
 │   ├── auth/callback/   where the email confirmation link lands
 │   ├── api/             route handlers — webhooks (Razorpay), cron, uploads
 │   ├── layout.tsx       root layout
@@ -145,6 +153,7 @@ src/
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
 │   ├── payouts/         the twice-weekly cycle: cycle · eligibility · queries · types
+│   ├── kyc/             identity before the first payout: actions · queries · razorpay · names · hash · validation · types
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
@@ -209,7 +218,7 @@ Rules:
 
 ### Schema
 
-32 migrations, 81 tables, RLS on every one. What to know before writing a query:
+33 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -252,6 +261,19 @@ Rules:
   expression (`e.status`, `b.total_paise`); for ON CONFLICT, either name a
   constraint or look-then-insert. `supabase db lint --linked` finds all of these
   and `db push` finds none of them.
+- **KYC moves in three steps and never in one** (0033).
+  `open_worker_kyc_attempt()` counts the attempt *before* a rupee is spent on a
+  penny drop, `record_worker_kyc_destination()` holds the destination while the
+  bank thinks about it, and `settle_worker_kyc()` applies the outcome to
+  `worker_kyc`, `payout_methods` and `worker_state` in one transaction. All four
+  functions in 0033 are service-role only. **`blocked` is not `rejected`**: a
+  name mismatch is terminal and `review_worker_kyc()` refuses to lift it, which
+  is what spec §6's "no override" looks like as code rather than as a policy
+  someone remembers.
+- **The full PAN and account number are not in this database.** Only
+  `pan_last4` / `account_last4` and a keyed HMAC — `KYC_HASH_PEPPER` lives in the
+  environment, so a database copy answers "same PAN?" for nobody but us. Don't
+  add a column that stores either in full.
 - **Posting goes through `publish_job()`** (0022), the same way: it locks the
   row, decides open vs `pending_moderation`, and writes the moderation and
   classification queue rows in the same transaction. Never move a job out of
@@ -345,17 +367,24 @@ categories (max 3) → samples (3–6 each) → submitted → approved · flagge
 - Sample review is per *application*, not per sample: the decision stamps every
   pending sample with the same outcome. The per-sample columns exist for the day
   that is not enough.
-- Not built yet: KYC (spec puts it before the first payout, not at signup), the
-  60-second cap on video samples, and watermarked sample previews. The
-  watermarker itself now exists — `lib/deliveries/preview.ts`, built for
-  deliveries — so pointing samples at it is a small job whenever the shortlist's
-  unwatermarked signed URLs start to matter. The other two land with R2.
+- Not built yet: the 60-second cap on video samples, and watermarked sample
+  previews. The watermarker itself now exists — `lib/deliveries/preview.ts`,
+  built for deliveries — so pointing samples at it is a small job whenever the
+  shortlist's unwatermarked signed URLs start to matter. Both land with R2. KYC
+  is built, and is its own section below — spec §6 puts it before the first
+  payout, not here.
 
 ### The console
 
-`/admin` is a work queue (spec §7). Worker approvals is the only module that
-exists; `/admin` redirects there rather than pretending to be a shell for five
-queues that do not exist.
+`/admin` is a work queue (spec §7). Two of its five modules exist — worker
+approvals and KYC review — so `/admin` redirects to whichever the account can
+open rather than pretending to be a shell for the other three.
+
+The layout guard is **membership** (`requireAnyAdmin`), not one permission. It
+used to be `review_workers`, which was indistinguishable from correct while
+approvals was the only module and locked the seeded `finance` role out of the
+whole console the moment KYC review landed. Each page still names the permission
+it needs, and `AdminNav` only renders a tab the account can actually open.
 
 Access is checked three times, deliberately not the same check three times:
 `requireAdmin(perm)` decides what renders (and 404s everyone else rather than
@@ -493,12 +522,13 @@ confirmJobPayment() verify → fetch → capture → settle
   disagree deadlock the first time a client reloads checkout while a webhook
   lands.
 - **Razorpay Route's transfer half is not wired**, and is not stubbed to look
-  wired. Transfers go to *linked accounts*, which need worker KYC, which spec §6
-  puts before the first payout rather than at signup. So the money is captured
-  into the platform account and held there, with `escrow_holds` and the ledger
-  as the record of whose it is — the same position an `on_hold` Route transfer
-  leaves it in, minus the linked account. `transferForJob()` in
-  `lib/payments/razorpay.ts` is the seam, and it throws.
+  wired. Transfers go to *linked accounts* — Razorpay's sub-merchant onboarding,
+  a different thing from the contact and fund account KYC creates, which is
+  where a payout is *sent*. So the money is captured into the platform account
+  and held there, with `escrow_holds` and the ledger as the record of whose it
+  is — the same position an `on_hold` Route transfer leaves it in, minus the
+  linked account. `transferForJob()` in `lib/payments/razorpay.ts` is the seam,
+  and it throws.
 - **Escrow release exists now** (0030, below); payouts and refunds still do not.
   If settlement fails after capture the client is charged and unassigned; the UI
   says so and refuses to offer a retry, and the log has the payment id. Building
@@ -612,11 +642,12 @@ cancel_payout_batch(id, …)        the way back
   right. `payout_paid` and `payout_failed` are already in `ledger_txn_kind` for
   the disbursement step. Not writing them early is also what makes
   `cancel_payout_batch()` cheap — nothing moved, so nothing must be moved back.
-- **KYC is why batches are empty.** `payouts.payout_method_id` is NOT NULL and
-  no worker has a verified `payout_methods` row, so every worker is skipped,
-  counted, and their earnings left `confirmed` for the next cycle. The builder
-  returns `workers_skipped` and `skipped_paise` so the cron logs how much money
-  is waiting on it. The day KYC lands this pays them with no change to 0031.
+- **KYC is what fills a batch, and 0033 did not touch 0031 to do it.**
+  `payouts.payout_method_id` is NOT NULL, so the builder skips any worker with
+  no verified `payout_methods` row, counts them, and leaves their earnings
+  `confirmed` for the next cycle — `workers_skipped` and `skipped_paise` are
+  what the cron logs. That was every worker until KYC existed and is now only
+  the ones who have not been through it, with no change to the builder at all.
 - The batch's resting state is `closed` — assembled, awaiting spec §7's review.
   `under_review` and `processing` belong to the disbursement step. Hitting the
   per-run worker cap leaves it `open` instead, and the next run keeps filling it.
@@ -627,6 +658,71 @@ cancel_payout_batch(id, …)        the way back
   batch in what is an audit trail.
 
 ---
+
+## KYC
+
+Spec §6, "KYC — before first payout, not at signup", and the thing that was
+standing between the payout cycle and a worker's bank account.
+
+```
+open_worker_kyc_attempt()        the claim, and the attempt counted
+   ↓                             (before a rupee is spent — see below)
+verifyPan()                      synchronous; a mismatch blocks here
+   ↓
+createFundAccountValidation()    the ₹1 penny drop, asynchronous
+   ↓
+record_worker_kyc_destination()  the destination, held `verifying`
+   ↓
+settle_worker_kyc()              verified · blocked · failed
+```
+
+- **The attempt is spent first, not last.** A penny drop costs real money (spec
+  §6 budgets ₹3–5 per worker) and spec §6's three-attempt ceiling exists to
+  bound that. A ceiling incremented on completion is one you escape by closing
+  the tab.
+- **The name comparison is the whole rule, and it lives in one pure module.**
+  `lib/kyc/names.ts` compares *every* pair among the declared name, the bank's
+  and the PAN registry's — including bank against PAN, which is the pair that
+  catches an account and a PAN belonging to two different people — and the
+  lowest agreement is the score. `names.test.ts` is where the line falls: a
+  block is permanent and unappealable, so each pair that must pass is a real way
+  Indian names vary (initials, order, honorifics, an extra part on one side,
+  SRIRAM against SRI RAM, LAKSHMI against LAXMI) and each that must fail is a
+  case where passing means paying a stranger. **RAJESH against RAKESH is one
+  edit and two people; MOHAMMED against MOHAMMAD is one edit and one person** —
+  that gap is why the token floor is 0.86 and not a round number, and why
+  anything looser has to come from a fold rule that names the sound it folds.
+- **Razorpay's own `name_match_score` decides nothing.** It is recorded in the
+  block reason for the audit trail; our matcher is what the account turns on,
+  because it is the one with the tests.
+- **The penny drop is asynchronous and the code treats that as normal.**
+  Razorpay answers `created`; the bank confirms seconds to minutes later. The
+  KYC screen re-reads it once on mount and on a button, and `settle_worker_kyc()`
+  is idempotent so two of those racing produce one outcome. A page render never
+  settles — `revalidatePath` throws during render.
+- **PAN is only mandatory above ₹5,000 lifetime** (spec §6, TDS), counted from
+  `worker_earnings` by `worker_lifetime_earnings_paise()` rather than from
+  `worker_state.lifetime_earnings_paise`, which nothing maintains. Under the
+  line, UPI alone is enough and KYC completes with no PAN at all.
+- **Razorpay's PAN endpoint is configuration, not a constant.** Unlike the
+  payment APIs it is enabled per merchant under contract and has no published
+  path, so it is `RAZORPAY_PAN_VERIFY_URL` and `verifyPan()` throws when it is
+  unset. Everything else still works: a worker under ₹5,000 verifies on the
+  penny drop alone, and above it the screen says PAN cannot be checked rather
+  than storing one nobody read. **A PAN is never recorded unverified** — that is
+  the failure mode this design exists to avoid.
+- **A mistyped account number is a permanent block**, because a wrong-but-real
+  account comes back in a stranger's name. That is spec §6's rule working, not a
+  bug, and it is why the form has a second account-number field that never
+  leaves the browser and states the consequence next to the button.
+- **A duplicate PAN is flagged, not refused.** 0005 chose that and it is right:
+  a household sharing a PAN and a fraud ring look identical from here.
+  Verification proceeds, both sides of the collision are marked, and the row
+  goes to `/admin/kyc` for a person.
+- Not built: changing a verified destination. `canSubmit` is false once
+  verified, so a worker who switches banks currently needs an admin. Doing it
+  properly means re-verifying the new account before retiring the old one, which
+  is a flow, not a field.
 
 ## Money
 

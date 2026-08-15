@@ -6,6 +6,7 @@
  */
 
 import type { EarningStatus } from "@/lib/payouts/eligibility";
+import type { KycStatus } from "@/lib/kyc/types";
 import type { Database } from "@/types/database.types";
 
 export type PayoutStatus = Database["public"]["Enums"]["payout_status"];
@@ -64,9 +65,20 @@ export type EarningsOverview = {
   totals: EarningTotals;
   nextRun: NextRun | null;
   /**
-   * Whether a verified payout destination exists. False for everyone until KYC
-   * is built (spec §6 puts it before the first payout), which is why the screen
-   * says so rather than showing a pay date it cannot keep.
+   * Whether a verified payout destination exists — which since 0033 means the
+   * worker has been through KYC (spec §6 puts it before the first payout). The
+   * screen shows a pay date only when this is true, because a date it cannot
+   * keep is worse than none.
    */
   canBePaid: boolean;
+  /**
+   * How far through KYC they are, so the screen can name the specific thing in
+   * the way rather than saying "processing". Null before they have started, and
+   * null too when the platform cannot verify anyone yet — the copy for those two
+   * is the same sentence, and neither is the worker's fault.
+   */
+  kycStatus: KycStatus | null;
+  /** Whether verification can run at all. False means the sentence is about us,
+   *  not about them. */
+  kycAvailable: boolean;
 };

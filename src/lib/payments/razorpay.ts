@@ -23,16 +23,17 @@
  * ### Route, and what is actually wired
  *
  * Razorpay Route splits a captured payment to *linked accounts* and can hold
- * each split until released — which is the escrow half of spec §4. Creating a
- * worker's linked account requires their KYC, and spec §6 puts KYC before the
- * first payout rather than at signup, so no worker has one yet.
+ * each split until released — which is the escrow half of spec §4. A linked
+ * account is Razorpay's sub-merchant onboarding, and it is a different thing
+ * from the contact and fund account that `lib/kyc/` now creates: KYC proves a
+ * worker owns a bank account and gives us somewhere to *send* money, which is
+ * what a payout takes. It does not make them a sub-merchant.
  *
  * So what runs today is the charge: the client's money is captured into the
  * platform account and held there, with `escrow_holds` and the ledger as the
  * record of whose it is. That is the same position a `{"on_hold": true}` Route
- * transfer leaves the money in, minus the linked account. When KYC lands, the
- * transfer is created at capture and released at acceptance; `transferForJob`
- * below is the seam it slots into, and it throws rather than pretending.
+ * transfer leaves the money in, minus the linked account. `transferForJob`
+ * below is the seam the split slots into, and it throws rather than pretending.
  */
 
 import { serverEnv } from "@/lib/env";
@@ -108,15 +109,23 @@ function authorizationHeader(): string {
  * Errors come back as `{"error": {"code": …, "description": …}}`, and the
  * description is written for a developer, not a client — it is logged and
  * carried on the exception, never rendered.
+ *
+ * Exported for `lib/kyc/razorpay.ts`, which talks to a different set of Razorpay
+ * endpoints with the same credentials, the same error envelope and the same
+ * reasons to bound the wait. A `path` beginning `http` is used whole — the PAN
+ * check lives on a host that arrives with the contract rather than under
+ * `api.razorpay.com/v1`.
  */
-async function request<T>(
+export async function razorpayRequest<T>(
   path: string,
   init: { method: "GET" | "POST"; body?: unknown },
 ): Promise<T> {
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+
   let response: Response;
 
   try {
-    response = await fetch(`${API_BASE}${path}`, {
+    response = await fetch(url, {
       method: init.method,
       headers: {
         Authorization: authorizationHeader(),
@@ -187,7 +196,7 @@ export async function createOrder({
     });
   }
 
-  return request<RazorpayOrder>("/orders", {
+  return razorpayRequest<RazorpayOrder>("/orders", {
     method: "POST",
     body: {
       amount: amountPaise,
@@ -202,13 +211,13 @@ export async function createOrder({
 }
 
 export async function fetchPayment(paymentId: string): Promise<RazorpayPayment> {
-  return request<RazorpayPayment>(`/payments/${encodeURIComponent(paymentId)}`, {
+  return razorpayRequest<RazorpayPayment>(`/payments/${encodeURIComponent(paymentId)}`, {
     method: "GET",
   });
 }
 
 export async function fetchOrder(orderId: string): Promise<RazorpayOrder> {
-  return request<RazorpayOrder>(`/orders/${encodeURIComponent(orderId)}`, { method: "GET" });
+  return razorpayRequest<RazorpayOrder>(`/orders/${encodeURIComponent(orderId)}`, { method: "GET" });
 }
 
 /**
@@ -231,7 +240,7 @@ export async function capturePayment({
   amountPaise: number;
 }): Promise<RazorpayPayment> {
   try {
-    return await request<RazorpayPayment>(
+    return await razorpayRequest<RazorpayPayment>(
       `/payments/${encodeURIComponent(paymentId)}/capture`,
       { method: "POST", body: { amount: amountPaise, currency: PAYMENT_CURRENCY } },
     );
@@ -248,14 +257,15 @@ export async function capturePayment({
 /**
  * Route's other half — the transfer to a worker's linked account.
  *
- * Not built, and not stubbed to look built. A worker has no linked account
- * because they have no KYC (spec §6 puts it before the first payout), so there
- * is no id to transfer to. Escrow is recorded in `escrow_holds` and the ledger
- * meanwhile, which is where the money's ownership actually lives.
+ * Not built, and not stubbed to look built. A worker has no *linked* account:
+ * KYC (0033) creates a RazorpayX contact and fund account, which is where a
+ * payout is sent, not a sub-merchant Route can split a payment to. Escrow is
+ * recorded in `escrow_holds` and the ledger meanwhile, which is where the
+ * money's ownership actually lives.
  *
- * Kept here so the seam is visible: when KYC lands, this creates the transfer
- * with `on_hold: true` at capture and releases it at acceptance, and the ledger
- * entries it already writes stop being the only record.
+ * Kept here so the seam is visible: with linked accounts, this creates the
+ * transfer with `on_hold: true` at capture and releases it at acceptance, and
+ * the ledger entries it already writes stop being the only record.
  */
 export async function transferForJob(): Promise<never> {
   throw new Error(

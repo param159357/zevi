@@ -16,6 +16,7 @@
  * calendar, the same one migration 0031 validates against.
  */
 
+import { isKycConfigured } from "@/lib/env";
 import { cycleFor } from "@/lib/payouts/cycle";
 import { payableFrom } from "@/lib/payouts/eligibility";
 import type {
@@ -189,7 +190,7 @@ export async function loadEarnings(
   workerId: string,
   now: Date = new Date(),
 ): Promise<EarningsOverview> {
-  const [earnings, methods] = await Promise.all([
+  const [earnings, methods, kyc] = await Promise.all([
     supabase
       .from("worker_earnings")
       .select(EARNING_COLUMNS)
@@ -202,17 +203,21 @@ export async function loadEarnings(
       .eq("status", "verified")
       .is("disabled_at", null)
       .limit(1),
+    supabase.from("worker_kyc").select("status").eq("worker_id", workerId).maybeSingle(),
   ]);
 
   if (earnings.error) {
     throw new Error(`could not read earnings: ${earnings.error.message}`);
   }
 
-  // Not fatal. A worker who cannot be told whether their destination is verified
+  // Neither is fatal. A worker who cannot be told where their verification stands
   // should still see what they have earned, and the copy degrades to the same
-  // sentence an unverified worker gets.
+  // sentence someone who has not started gets.
   if (methods.error) {
     console.error(`[earnings] could not read payout methods: ${methods.error.message}`);
+  }
+  if (kyc.error) {
+    console.error(`[earnings] could not read KYC status: ${kyc.error.message}`);
   }
 
   const lines = ((earnings.data ?? []) as unknown as EarningRow[]).map(toLine);
@@ -222,5 +227,7 @@ export async function loadEarnings(
     totals: totalsFor(lines, now),
     nextRun: nextRunFor(lines),
     canBePaid: (methods.data?.length ?? 0) > 0,
+    kycStatus: kyc.data?.status ?? null,
+    kycAvailable: isKycConfigured(),
   };
 }
