@@ -1,4 +1,6 @@
+import { ELIGIBILITY_HOURS } from "@/lib/constants/payouts";
 import type { WorkerJobWork } from "@/lib/deliveries/types";
+import { payoutRunFor } from "@/lib/payouts/eligibility";
 import { formatDate } from "@/lib/utils/format";
 import { formatPaise } from "@/lib/utils/money";
 
@@ -68,18 +70,33 @@ function describeStatus(status: NonNullable<WorkerJobWork["earning"]>["status"])
 }
 
 /**
- * Payouts do not exist yet — no cycle runs, no money leaves the platform
- * account. Saying "next Friday" would be a promise nothing can keep, so this
- * says what is true: the amount is yours and the payout flow is not built.
+ * Which cycle this lands in — spec §6's twice-weekly run, worked out from the
+ * stamps `accept_job_delivery()` wrote at acceptance rather than from today's
+ * settings, so the date does not move under a worker who has already read it.
+ *
+ * This says nothing about whether the money can actually be sent. Bank
+ * verification is not built (spec §6 puts KYC before the first payout), and the
+ * earnings screen is where that is spelled out — one place, next to the balance
+ * it affects, instead of a caveat on every job.
  */
 function describeTiming(earning: NonNullable<WorkerJobWork["earning"]>): string {
+  const run = payoutRunFor({
+    status: earning.status,
+    eligibleAt: earning.eligibleAt,
+    holdUntil: earning.holdUntil,
+  });
+
+  const due = run
+    ? ` Due in the run that pays ${run.paysLabel} ${formatDate(run.scheduledPayAt.toISOString())}.`
+    : "";
+
   if (earning.holdUntil) {
-    return `${earning.holdReason ?? "Held"} — clear from ${formatDate(earning.holdUntil)}. Payouts aren't switched on yet, so nothing has been transferred.`;
+    return `${earning.holdReason ?? "Held"} — clear from ${formatDate(earning.holdUntil)}.${due}`;
   }
 
   if (earning.eligibleAt) {
-    return `Matures ${formatDate(earning.eligibleAt)}, 48 hours after acceptance. Payouts aren't switched on yet, so nothing has been transferred.`;
+    return `Matures ${formatDate(earning.eligibleAt)}, ${ELIGIBILITY_HOURS} hours after acceptance.${due}`;
   }
 
-  return "Payouts aren't switched on yet, so nothing has been transferred.";
+  return "Opens when the client accepts your delivery.";
 }

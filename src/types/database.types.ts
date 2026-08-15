@@ -4982,6 +4982,44 @@ export type Database = {
         Args: { budget_paise: number; delivered_at: string }
         Returns: string
       }
+      build_payout_batch: {
+        Args: { p_cutoff_at: string; p_max_workers?: number }
+        Returns: {
+          batch_id: string
+          cutoff_at: string
+          earnings_claimed: number
+          payouts_created: number
+          scheduled_pay_at: string
+          skipped_paise: number
+          status: Database["public"]["Enums"]["payout_batch_status"]
+          total_paise: number
+          workers_skipped: number
+        }[]
+      }
+      cancel_payout_batch: {
+        Args: { p_actor_id: string; p_batch_id: string; p_reason: string }
+        Returns: {
+          created_at: string
+          cutoff_at: string
+          cycle_start_at: string
+          failure_note: string | null
+          id: string
+          item_count: number
+          processed_at: string | null
+          reviewed_at: string | null
+          reviewed_by: string | null
+          scheduled_pay_at: string
+          status: Database["public"]["Enums"]["payout_batch_status"]
+          total_paise: number
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "payout_batches"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       claim_job_assignment: {
         Args: {
           p_job_id: string
@@ -5109,6 +5147,7 @@ export type Database = {
           status: string
         }[]
       }
+      release_matured_earning_holds: { Args: never; Returns: number }
       request_job_revision: {
         Args: { p_actor_id: string; p_delivery_id: string; p_reason: string }
         Returns: {

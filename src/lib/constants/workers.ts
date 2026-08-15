@@ -95,6 +95,7 @@ export const WORKER_ROUTES = {
    *  different things, so two segments. */
   work: "/worker/work",
   deliver: (jobId: string) => `/worker/work/${jobId}`,
+  earnings: "/worker/earnings",
 } as const;
 
 export const ADMIN_ROUTES = {

@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/auto-accept",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/payouts",
+      "schedule": "30 19 * * *"
     }
   ]
 }

@@ -3,7 +3,7 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: a job now runs end to end, from posting to completion.**
+**Status: a job runs end to end, and the payout cycle now gathers what it earned.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
@@ -21,11 +21,18 @@ revision, or says nothing and lets the clock accept it for them. Acceptance
 releases escrow, recognises the worker's half of the commission and opens a
 `worker_earnings` row.
 
-Nothing beyond that: no chat, no ratings, no disputes, no KYC — and **money still
-cannot leave the platform account**. Escrow releases into a worker's payable
-balance, but payouts and refunds do not exist, so that balance is where it stops.
-SES, Sentry and SMS are unwired, and uploads sit in Supabase Storage until R2
-replaces it.
+On top of that the twice-weekly cycle runs: holds expire on their own, a batch
+closes Wednesday and Sunday midnight IST, and every matured unheld earning is
+gathered into one payout per worker. A worker sees their balances and the date
+they will be paid.
+
+Nothing beyond that: no chat, no ratings, no disputes — and **money still cannot
+leave the platform account**. The batch stops one step short of a bank transfer,
+because `payouts.payout_method_id` needs a verified destination and **KYC is not
+built**, so every worker is skipped and their earnings roll forward. That is the
+single thing standing between this and a worker being paid. Refunds do not exist
+either. SES, Sentry and SMS are unwired, and uploads sit in Supabase Storage
+until R2 replaces it.
 
 ---
 
@@ -45,6 +52,17 @@ npx supabase gen types typescript --project-id vsqqrbodwrvjuclqhean > src/types/
 # The auto-accept sweep. Vercel Cron calls this hourly in production; nothing
 # calls it locally, so a delivery past its window sits there until you do.
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/auto-accept
+
+# The payout run — expires matured holds, then builds the batch for whichever
+# cycle closed most recently. Daily at 01:00 IST in production. Idempotent: on
+# the five days a week with nothing new to close it finds the batch already
+# built and says so.
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/payouts
+
+# plpgsql_check against the linked project. Run it after any new function that
+# writes money — it catches the ambiguous-column class of bug that `db push`
+# accepts happily and that only fails at runtime, on the money path. See 0032.
+npx supabase db lint --linked --level warning
 ```
 
 **The terminal here is PowerShell** (Windows PowerShell 5.1). Chain commands with
@@ -126,6 +144,7 @@ src/
 │   ├── admin/           console guard + approval queue: session · actions · queries
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
+│   ├── payouts/         the twice-weekly cycle: cycle · eligibility · queries · types
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
@@ -190,7 +209,7 @@ Rules:
 
 ### Schema
 
-30 migrations, 81 tables, RLS on every one. What to know before writing a query:
+32 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -224,6 +243,15 @@ Rules:
   assignment context — `42804`, at runtime, on a path nobody had reached yet.
   0029 fixed the last two in `claim_job_assignment()`. Write
   `'client'::public.party_role`, always.
+- **Know which column positions plpgsql substitutes variables into.** 0032 is
+  the same *shape* of bug as those three and catches people who have learned
+  only half the rule. Inside a function body an INSERT column list and an UPDATE
+  `set` target are **not** substituted, so they are safe unqualified — but an
+  ordinary expression is, and so is an `on conflict (col)` inference spec, which
+  is the one place a qualification is not syntactically allowed. Qualify every
+  expression (`e.status`, `b.total_paise`); for ON CONFLICT, either name a
+  constraint or look-then-insert. `supabase db lint --linked` finds all of these
+  and `db push` finds none of them.
 - **Posting goes through `publish_job()`** (0022), the same way: it locks the
   row, decides open vs `pending_moderation`, and writes the moderation and
   classification queue rows in the same transaction. Never move a job out of
@@ -539,8 +567,64 @@ request_job_revision()  the one free one   job → revision_requested, clock sto
   there is no email provider, so `reminder_1_sent_at` and `reminder_2_sent_at`
   stay null rather than being stamped for a message nobody sent.
 - The earning lands `confirmed`, or `on_hold` for a new client's first three
-  jobs (spec §6's chargeback window). Nothing moves it further: payouts are the
-  next thing, and `EarningSummary` says so rather than promising a Friday.
+  jobs (spec §6's chargeback window). What moves it from there is the cycle
+  below.
+
+---
+
+## The payout cycle
+
+Spec §6 "Payouts", and the third moment of the money 0029 and 0030 built.
+
+```
+release_matured_earning_holds()   the 14 days expiring        on_hold → confirmed
+build_payout_batch(cutoff)        the cycle, assembled        confirmed → in_payout
+cancel_payout_batch(id, …)        the way back
+        ·
+/api/cron/payouts                 daily at 01:00 IST
+```
+
+- **"Closes Wednesday midnight" is the midnight that *ends* Wednesday.** That is
+  the one ambiguous sentence in the spec and everything follows from it: the
+  cutoff instants are **Thursday 00:00 IST** (pays Friday) and **Monday 00:00
+  IST** (pays Tuesday), so work accepted during Wednesday is in Friday's run.
+  The other reading would mean nothing happening on Wednesday counted toward the
+  cycle closing on Wednesday.
+- **The calendar is in TypeScript, and only there.** `lib/payouts/cycle.ts` is a
+  pure function of the clock with no rows to lock, two screens need it before
+  any batch exists, and it is where the test runner can reach it —
+  `eligibility.test.ts` is the spec's three paragraphs checked against a real
+  fortnight. What the database keeps is the *invariant*: `build_payout_batch()`
+  refuses a cutoff that is not midnight IST on a Thursday or a Monday, and
+  refuses one that has not arrived. A shape check on the calendar's output, not
+  a second copy of it — so a compromised cron cannot pay anyone early.
+- **Neither delay is ever recomputed.** `eligible_at` (acceptance + 48h) and
+  `hold_until` (14 days, a new client's first three jobs) are stamped by
+  `accept_job_delivery()` at acceptance. A worker told "Friday" is paid Friday
+  even if the settings move on Thursday.
+- **The batch selects everything mature, not everything mature *since* the last
+  run.** There is no lower bound on `eligible_at` in that predicate, and that
+  omission is what makes spec §6's "anything short rolls forward" need no
+  special case at all — and what makes a cron that failed for a week pay late
+  rather than pay short.
+- **Money does not move here, and no ledger entry is written.** Nothing has left
+  `worker_payable`, so the ledger saying the platform still owes it is exactly
+  right. `payout_paid` and `payout_failed` are already in `ledger_txn_kind` for
+  the disbursement step. Not writing them early is also what makes
+  `cancel_payout_batch()` cheap — nothing moved, so nothing must be moved back.
+- **KYC is why batches are empty.** `payouts.payout_method_id` is NOT NULL and
+  no worker has a verified `payout_methods` row, so every worker is skipped,
+  counted, and their earnings left `confirmed` for the next cycle. The builder
+  returns `workers_skipped` and `skipped_paise` so the cron logs how much money
+  is waiting on it. The day KYC lands this pays them with no change to 0031.
+- The batch's resting state is `closed` — assembled, awaiting spec §7's review.
+  `under_review` and `processing` belong to the disbursement step. Hitting the
+  per-run worker cap leaves it `open` instead, and the next run keeps filling it.
+- `cancel_payout_batch()` ships with the builder rather than with disbursement
+  because a batch that cannot be un-built is a trap: its earnings sit at
+  `in_payout`, invisible to every later cycle. It is lint-clean but has not been
+  exercised at runtime — doing so would leave a permanently misleading `failed`
+  batch in what is an audit trail.
 
 ---
 

@@ -11,6 +11,7 @@ const LINKS = [
   { href: WORKER_ROUTES.feed, label: "Jobs" },
   { href: WORKER_ROUTES.optIns, label: "Opt-ins" },
   { href: WORKER_ROUTES.work, label: "Your work" },
+  { href: WORKER_ROUTES.earnings, label: "Earnings" },
   { href: WORKER_ROUTES.samples, label: "Samples" },
 ] as const;
 
