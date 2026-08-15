@@ -90,6 +90,11 @@ export const WORKER_ROUTES = {
   feed: "/worker/jobs",
   job: (jobId: string) => `/worker/jobs/${jobId}`,
   optIns: "/worker/opt-ins",
+  /** Jobs they were picked for. `/worker/jobs` is the feed — what they could
+   *  take — and this is what they have. Two different screens about two
+   *  different things, so two segments. */
+  work: "/worker/work",
+  deliver: (jobId: string) => `/worker/work/${jobId}`,
 } as const;
 
 export const ADMIN_ROUTES = {

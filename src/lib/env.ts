@@ -112,4 +112,13 @@ export const serverEnv = {
       process.env.RAZORPAY_WEBHOOK_SECRET,
     );
   },
+  /**
+   * The bearer token on the auto-accept sweep. Vercel Cron sends whatever is in
+   * this variable as `Authorization: Bearer …`; the route refuses every request
+   * while it is unset, because an open endpoint that completes jobs and releases
+   * escrow is an open endpoint that pays people early.
+   */
+  get cronSecret() {
+    return required("CRON_SECRET", process.env.CRON_SECRET);
+  },
 };

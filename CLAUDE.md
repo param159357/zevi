@@ -3,7 +3,7 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: schema applied, auth built, jobs posted, opted into, paid for and assigned.**
+**Status: a job now runs end to end, from posting to completion.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
@@ -14,12 +14,18 @@ console queue. An approved worker sees the category-filtered feed, reads a brief
 and opts in with the three short fields. The client reads that list, sorted by
 rating, with each worker's samples beside their three answers, and picks one
 — which charges their card through Razorpay, holds the budget in escrow and
-writes the ledger entries, in the same transaction that assigns the job.
+writes the ledger entries, in the same transaction that assigns the job. The
+worker then delivers: files upload straight to storage, images and PDFs get a
+real watermarked derivative, and the client accepts, asks for the one free
+revision, or says nothing and lets the clock accept it for them. Acceptance
+releases escrow, recognises the worker's half of the commission and opens a
+`worker_earnings` row.
 
-Nothing beyond that: no delivery, no chat, no ratings, no KYC — and **no way to
-get money back out**. Escrow release, payouts and refunds do not exist, so a
-captured payment can only be settled forward. SES, Sentry and SMS are unwired,
-and uploads sit in Supabase Storage until R2 replaces it.
+Nothing beyond that: no chat, no ratings, no disputes, no KYC — and **money still
+cannot leave the platform account**. Escrow releases into a worker's payable
+balance, but payouts and refunds do not exist, so that balance is where it stops.
+SES, Sentry and SMS are unwired, and uploads sit in Supabase Storage until R2
+replaces it.
 
 ---
 
@@ -35,6 +41,10 @@ npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
 npx supabase gen types typescript --project-id vsqqrbodwrvjuclqhean > src/types/database.types.ts
+
+# The auto-accept sweep. Vercel Cron calls this hourly in production; nothing
+# calls it locally, so a delivery past its window sits there until you do.
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/auto-accept
 ```
 
 **The terminal here is PowerShell** (Windows PowerShell 5.1). Chain commands with
@@ -78,6 +88,7 @@ actorId } : {})` — and let the function's own `default null` apply.
 | Styling | Tailwind CSS v4 | CSS-first config in `globals.css`, no `tailwind.config.js` |
 | DB + Auth | Supabase (Postgres) | `@supabase/supabase-js`, `@supabase/ssr` |
 | Files | Cloudflare R2 | not wired up |
+| Watermarks | `sharp` (raster) · `pdf-lib` (PDF) | delivery previews, generated server-side |
 | Payments | Razorpay | charge + escrow wired; Route transfers need KYC |
 | Email | Amazon SES | not wired up |
 | Errors | Sentry | not wired up |
@@ -111,6 +122,7 @@ src/
 │   ├── jobs/            actions.ts · queries.ts · validation.ts · types.ts
 │   ├── workers/         samples and the application: actions · queries · types
 │   ├── matching/        feed, opt-ins, shortlist: actions · queries · shortlist · validation · types
+│   ├── deliveries/      delivery, acceptance, revisions: actions · queries · access · preview · validation · types
 │   ├── admin/           console guard + approval queue: session · actions · queries
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
@@ -178,7 +190,7 @@ Rules:
 
 ### Schema
 
-29 migrations, 81 tables, RLS on every one. What to know before writing a query:
+30 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -201,6 +213,11 @@ Rules:
   `SELECT … FOR UPDATE` on the job row. Never INSERT `job_assignments` directly.
   Since 0029 the only caller is `settle_job_payment_and_assign()`, so an
   assignment always has a captured payment and a balanced ledger behind it.
+- **Delivery goes the same way** (0030). `submit_job_delivery()`,
+  `accept_job_delivery()` and `request_job_revision()` are service-role only, and
+  0008's three INSERT policies on `job_deliveries`, `delivery_files` and
+  `job_revisions` were dropped with the grants — each of those writes moves a row
+  the same statement cannot finish, and acceptance moves money.
 - **Cast every enum literal in a function.** 0025, 0026 and 0029 are all the
   same bug: a `case` or a parameter-built `values` row containing bare literals
   resolves to `text`, and Postgres will not coerce text to an enum in
@@ -301,9 +318,10 @@ categories (max 3) → samples (3–6 each) → submitted → approved · flagge
   pending sample with the same outcome. The per-sample columns exist for the day
   that is not enough.
 - Not built yet: KYC (spec puts it before the first payout, not at signup), the
-  60-second cap on video samples, and watermarked previews — samples are private
-  and only their owner and a reviewer can see them, so nothing is displayed
-  unwatermarked. All three land with the R2 pipeline.
+  60-second cap on video samples, and watermarked sample previews. The
+  watermarker itself now exists — `lib/deliveries/preview.ts`, built for
+  deliveries — so pointing samples at it is a small job whenever the shortlist's
+  unwatermarked signed URLs start to matter. The other two land with R2.
 
 ### The console
 
@@ -453,13 +471,76 @@ confirmJobPayment() verify → fetch → capture → settle
   as the record of whose it is — the same position an `on_hold` Route transfer
   leaves it in, minus the linked account. `transferForJob()` in
   `lib/payments/razorpay.ts` is the seam, and it throws.
-- **No money comes back out yet.** No release, no payout, no refund. If
-  settlement fails after capture the client is charged and unassigned; the UI
+- **Escrow release exists now** (0030, below); payouts and refunds still do not.
+  If settlement fails after capture the client is charged and unassigned; the UI
   says so and refuses to offer a retry, and the log has the payment id. Building
   refunds is what closes that.
 - Without `NEXT_PUBLIC_RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` the shortlist
   disables picking and says why. There is deliberately no assign-without-paying
   path left, in any environment.
+
+---
+
+## Delivery, acceptance and the clock
+
+Spec §4 steps 7–9, and the second half of the money 0029 started.
+
+```
+submit_job_delivery()   worker sends       job → delivered, 36h/3d clock starts
+   ↓
+accept_job_delivery()   client accepts     escrow → worker, job → completed
+   ↑                    …or the clock does
+sweep_auto_accepts()    /api/cron/auto-accept, hourly
+   ·
+request_job_revision()  the one free one   job → revision_requested, clock stops
+```
+
+- **Acceptance is one transaction and it is the other half of spec §8's gross.**
+  Capture recognised the *client's* commission because that is earned then;
+  release recognises the *worker's*, opens the escrow hold, writes the balanced
+  `escrow_released` ledger transaction, creates the `worker_earnings` row,
+  completes the job and the assignment, unlocks the files and moves the
+  `jobs_completed` counters. All of it or none of it. It takes no amounts —
+  every figure comes from `job_financials`, frozen before a card was charged.
+- **`worker_category_stats` is written here and nowhere else.** The shortlist
+  sorts on it (spec §6 keeps ratings and experience per category), so a
+  completion that skipped it would leave every worker reading "0 jobs" forever.
+- **Auto-acceptance is the same function as a click**, with `p_auto` set. There
+  is no second implementation of "this job is done" to drift. The sweep gives
+  each delivery its own subtransaction and returns its failures as rows, so one
+  stuck job does not strand the ones behind it.
+- **The window is stored, never re-derived.** `stamp_auto_accept_deadline()`
+  reads the three `delivery.auto_accept_*` settings once, at delivery. A client
+  promised 36 hours gets 36 hours even if the setting moves an hour later — and
+  `request_job_revision()` refuses past it, because the window binds both sides.
+- **`delivery_files.unlocked_at` is the whole access model.** Before it the
+  client gets a watermarked derivative or nothing; after it, the original.
+  `deliveryFileAccess()` is the only place that decides, and every way it can be
+  wrong ends with the client seeing *less*. A file whose watermarking failed is
+  locked, not shown.
+- **The watermark is a separate object under `delivery-previews/`**, which no
+  storage policy covers — service-role writes, signed-URL reads. A worker who
+  could overwrite their own preview could hand over the clean file early. It is
+  generated at file registration, not at submit, so the cost is one file at a
+  time while the worker is still assembling.
+- **What can honestly be watermarked**: raster images (sharp — downscaled, mark
+  composited into the pixels) and PDFs (pdf-lib — stamped on every page). The
+  PDF one is weaker and the code says so: the mark is an overlay in the content
+  stream and can be stripped. Video needs ffmpeg and PPTX/DOCX need a converter,
+  so **they are locked, not faked** — the composer tells the worker their client
+  will be deciding blind and asks for a PDF export alongside the source. Text
+  and CSV get spec §6's other half: the body inline, no URL minted at all.
+- **One free revision, and the second is refused rather than half-built.** Spec
+  §5 gives it "only by worker agreement, otherwise dispute", and neither the
+  agreement flow nor disputes exist. `job_revisions.due_at` stays null for the
+  same reason — the spec sets no revision turnaround, and inventing one invents
+  a lateness penalty with it.
+- **Reminders are not built.** Spec §5 wants nudges at 12h/30h and 24h/60h;
+  there is no email provider, so `reminder_1_sent_at` and `reminder_2_sent_at`
+  stay null rather than being stamped for a message nobody sent.
+- The earning lands `confirmed`, or `on_hold` for a new client's first three
+  jobs (spec §6's chargeback window). Nothing moves it further: payouts are the
+  next thing, and `EarningSummary` says so rather than promising a Friday.
 
 ---
 

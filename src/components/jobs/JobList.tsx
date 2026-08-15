@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { EDITABLE_JOB_STATUSES, JOB_ROUTES } from "@/lib/constants/jobs";
+import { EDITABLE_JOB_STATUSES, JOB_ROUTES, REVIEWABLE_JOB_STATUSES } from "@/lib/constants/jobs";
 import type { ClientJobSummary } from "@/lib/jobs/queries";
 import type { JobStatus } from "@/lib/jobs/types";
 import { formatDate } from "@/lib/utils/format";
@@ -78,6 +78,22 @@ export function JobList({ jobs }: { jobs: ClientJobSummary[] }) {
                   {job.assignedWorkerId !== null
                     ? "See who you picked"
                     : `${job.optInCount} interested — pick one`}
+                </Link>
+              ) : null}
+
+              {/* The second link a job earns, once there is work to look at.
+                  'delivered' is the one that needs a decision, and it is the
+                  one with a clock running against it (spec §5). */}
+              {(REVIEWABLE_JOB_STATUSES as readonly string[]).includes(job.status) ? (
+                <Link
+                  href={JOB_ROUTES.review(job.id)}
+                  className="hover:text-accent text-accent block text-xs underline-offset-2 hover:underline"
+                >
+                  {job.status === "delivered"
+                    ? "Review the work"
+                    : job.status === "completed"
+                      ? "See what was delivered"
+                      : "See how it's going"}
                 </Link>
               ) : null}
             </div>

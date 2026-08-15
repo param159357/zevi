@@ -4946,6 +4946,34 @@ export type Database = {
       }
     }
     Functions: {
+      accept_job_delivery: {
+        Args: { p_actor_id?: string; p_auto?: boolean; p_delivery_id: string }
+        Returns: {
+          accepted_at: string | null
+          accepted_by: string | null
+          assignment_id: string
+          attempt: number
+          auto_accept_at: string
+          auto_accepted: boolean
+          created_at: string
+          delivered_at: string
+          id: string
+          job_id: string
+          note: string | null
+          reminder_1_sent_at: string | null
+          reminder_2_sent_at: string | null
+          revision_requested_at: string | null
+          status: Database["public"]["Enums"]["delivery_status"]
+          updated_at: string
+          worker_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "job_deliveries"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       admin_can: {
         Args: { perm: Database["public"]["Enums"]["admin_permission"] }
         Returns: boolean
@@ -5081,6 +5109,30 @@ export type Database = {
           status: string
         }[]
       }
+      request_job_revision: {
+        Args: { p_actor_id: string; p_delivery_id: string; p_reason: string }
+        Returns: {
+          created_at: string
+          delivery_id: string
+          due_at: string | null
+          id: string
+          is_free: boolean
+          job_id: string
+          reason: string
+          requested_by: string
+          responded_at: string | null
+          sequence: number
+          status: Database["public"]["Enums"]["revision_status"]
+          updated_at: string
+          worker_response: string | null
+        }
+        SetofOptions: {
+          from: "*"
+          to: "job_revisions"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       request_phone_verification: {
         Args: {
           p_mobile: string
@@ -5166,6 +5218,39 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      submit_job_delivery: {
+        Args: {
+          p_file_ids: string[]
+          p_job_id: string
+          p_note: string
+          p_worker_id: string
+        }
+        Returns: {
+          accepted_at: string | null
+          accepted_by: string | null
+          assignment_id: string
+          attempt: number
+          auto_accept_at: string
+          auto_accepted: boolean
+          created_at: string
+          delivered_at: string
+          id: string
+          job_id: string
+          note: string | null
+          reminder_1_sent_at: string | null
+          reminder_2_sent_at: string | null
+          revision_requested_at: string | null
+          status: Database["public"]["Enums"]["delivery_status"]
+          updated_at: string
+          worker_id: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "job_deliveries"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       submit_worker_application: {
         Args: { p_worker_id: string }
         Returns: {
@@ -5173,6 +5258,15 @@ export type Database = {
           detail: string
           sla_due_at: string
           status: string
+        }[]
+      }
+      sweep_auto_accepts: {
+        Args: { p_limit?: number }
+        Returns: {
+          accepted: boolean
+          delivery_id: string
+          detail: string
+          job_id: string
         }[]
       }
       verify_phone_otp: {

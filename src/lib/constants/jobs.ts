@@ -106,7 +106,21 @@ export const JOB_ROUTES = {
    *  of `/post/:id`, which is the *draft* — the two are different screens about
    *  the same job at different points in its life. */
   shortlist: (jobId: string) => `/shortlist/${jobId}`,
+  /** Reviewing what was delivered, and the accept / revise decision (spec §5). */
+  review: (jobId: string) => `/review/${jobId}`,
 } as const;
 
 /** Statuses whose brief a client may still change (spec §5). */
 export const EDITABLE_JOB_STATUSES = ["draft", "pending_moderation", "open"] as const;
+
+/**
+ * Statuses where `/review/:id` has something on it — a worker is on the job, so
+ * there is progress, a delivery, or a finished piece of work to look at.
+ */
+export const REVIEWABLE_JOB_STATUSES = [
+  "assigned",
+  "delivered",
+  "revision_requested",
+  "completed",
+  "disputed",
+] as const;

@@ -10,11 +10,12 @@ const LINKS = [
   { href: WORKER_ROUTES.home, label: "Home" },
   { href: WORKER_ROUTES.feed, label: "Jobs" },
   { href: WORKER_ROUTES.optIns, label: "Opt-ins" },
+  { href: WORKER_ROUTES.work, label: "Your work" },
   { href: WORKER_ROUTES.samples, label: "Samples" },
 ] as const;
 
 /**
- * The worker's four surfaces. A Client Component only because marking the
+ * The worker's surfaces. A Client Component only because marking the
  * current one needs the pathname — everything it renders is a plain link.
  *
  * Every destination re-checks who is asking; this is wayfinding, not access.

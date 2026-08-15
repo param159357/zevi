@@ -73,6 +73,23 @@ export function formatCount(count: number, noun: string, plural = `${noun}s`): s
 }
 
 /**
+ * `2 days left` · `14 hours left` · `9 minutes left`. For the auto-accept clock,
+ * whose longer window is three days — where `72h left` is arithmetically right
+ * and reads like a mistake.
+ */
+export function formatRemaining(iso: string, from: Date = new Date()): string {
+  const minutes = Math.round((new Date(iso).getTime() - from.getTime()) / 60_000);
+
+  if (minutes <= 0) return "any moment now";
+  if (minutes < 60) return `${formatCount(minutes, "minute")} left`;
+
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${formatCount(hours, "hour")} left`;
+
+  return `${formatCount(Math.round(hours / 24), "day")} left`;
+}
+
+/**
  * `4h left` · `20m left` · `3h overdue`. For SLA clocks, where a day is too
  * coarse to be worth rendering — the worker approval queue runs on 24 hours.
  */
