@@ -113,7 +113,7 @@ export async function loadDisputeCase(
       `id, job_id, raised_by, raised_by_role, status, layer, reason_summary,
        amount_paise, opened_at, response_due_at, first_response_due_at,
        first_responded_at, decision_due_at, outcome, split_client_bps,
-       decision_note, decided_at`,
+       decision_note, decided_at, client_refund_cap_bps`,
     )
     .eq("id", disputeId)
     .maybeSingle();
@@ -194,6 +194,7 @@ export async function loadDisputeCase(
     raisedByRole: dispute.raised_by_role,
     escrowHeldPaise: escrow?.amount_paise ?? null,
     escrowStatus: escrow?.status ?? null,
+    clientRefundCapBps: dispute.client_refund_cap_bps,
     client,
     worker,
     statements: (statements ?? []).map(

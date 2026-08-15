@@ -1,30 +1,38 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { TextArea } from "@/components/ui/TextArea";
 import { REVISION_REASON_MAX_LENGTH } from "@/lib/constants/deliveries";
+import { DISPUTE_ROUTES } from "@/lib/constants/disputes";
 import { acceptDelivery, requestRevision } from "@/lib/deliveries/actions";
 
 /**
- * Spec §5's three endings, minus the one that does not exist yet.
+ * Spec §5's three endings — all three of them, now that the third exists.
  *
- * Accept releases the escrow, and a revision is the one free one. Dispute is the
- * third and has no flow behind it, so it is not offered as a button that goes
- * nowhere — the copy points at support instead.
+ * Accept releases the escrow, a revision is the one free one, and a dispute
+ * freezes the money and puts it in front of a person. They are deliberately not
+ * three equal buttons: accepting is what should happen, the revision is the
+ * cheap way to fix most of what does not, and a case is the last door. The
+ * ordering and the weight say so.
  *
- * Both actions confirm. Accepting is irreversible and pays someone; asking for
- * changes spends the only free revision the job has. Neither is a thing to do by
- * brushing a button on a phone.
+ * Both of the actions here confirm. Accepting is irreversible and pays someone;
+ * asking for changes spends the only free revision the job has. Neither is a
+ * thing to do by brushing a button on a phone. The dispute is a link rather than
+ * an action, because it opens a screen that asks for 500 characters — which is
+ * its own confirmation, and a better one.
  */
 export function ReviewActions({
   deliveryId,
+  jobId,
   workerName,
   freeRevisionsLeft,
 }: {
   deliveryId: string;
+  jobId: string;
   workerName: string;
   freeRevisionsLeft: number;
 }) {
@@ -140,12 +148,18 @@ export function ReviewActions({
             Ask for a revision
           </Button>
         ) : null}
+
+        <Link href={DISPUTE_ROUTES.raise(jobId)}>
+          <Button variant="ghost" fullWidth={false}>
+            Open a case
+          </Button>
+        </Link>
       </div>
 
       <p className="text-muted text-xs">
         {freeRevisionsLeft > 0
-          ? "One revision is free. Beyond that it needs the worker to agree — write to support if it comes to that."
-          : "You've used the free revision on this job. If the work still isn't right, write to support rather than accepting it."}
+          ? "One revision is free. If the work isn't close enough for that to help, open a case and one of us will decide it."
+          : "You've used the free revision on this job. If the work still isn't right, open a case rather than accepting it."}
       </p>
     </div>
   );

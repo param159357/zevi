@@ -82,7 +82,27 @@ export default async function DisputeCasePage({
           {detail.decisionNote ? ` — ${detail.decisionNote}` : ""}
         </Alert>
       ) : (
-        <Deadlines detail={detail} />
+        <>
+          {/* Said at the top rather than only above the buttons. A reviewer who
+              reads a whole case and writes a note before finding out it cannot
+              be decided has lost the three minutes spec §11 budgets for it. */}
+          {detail.escrowHeldPaise === null ? (
+            <Alert tone="error">
+              Escrow on this job is already settled, so this case cannot be decided here.
+              It was raised inside spec §11&rsquo;s 48 hours after acceptance, which needs the
+              worker&rsquo;s earning reversed — a flow that is not built. Settle it by hand.
+            </Alert>
+          ) : null}
+
+          {detail.clientRefundCapBps === null ? null : (
+            <Alert tone="info">
+              This came from a cancellation past half the deadline, so the client is capped
+              at {formatBps(detail.clientRefundCapBps)} of the budget.
+            </Alert>
+          )}
+
+          <Deadlines detail={detail} />
+        </>
       )}
 
       <Section title="What was asked for">
@@ -200,6 +220,7 @@ export default async function DisputeCasePage({
             disputeId={detail.disputeId}
             budgetPaise={detail.budgetPaise}
             escrowHeldPaise={detail.escrowHeldPaise}
+            clientRefundCapBps={detail.clientRefundCapBps}
             canResolve={canResolve}
           />
         </Section>

@@ -30,16 +30,24 @@ export function DisputeDecisionForm({
   disputeId,
   budgetPaise,
   escrowHeldPaise,
+  clientRefundCapBps,
   canResolve,
 }: {
   disputeId: string;
   budgetPaise: number;
   escrowHeldPaise: number | null;
+  /** Spec §5's ceiling, when a late cancellation opened this case. */
+  clientRefundCapBps: number | null;
   canResolve: boolean;
 }) {
   const [state, formAction] = useActionState(resolveDispute, IDLE);
   const [outcome, setOutcome] = useState<DisputeOutcome | null>(null);
-  const [clientPercent, setClientPercent] = useState(50);
+
+  // Whole percents, because the column is basis points and the screen is not —
+  // asking a person to type 6000 to mean 60% is how a client gets 6% of their
+  // money back at four in the afternoon.
+  const capPercent = clientRefundCapBps === null ? 100 : Math.floor(clientRefundCapBps / 100);
+  const [clientPercent, setClientPercent] = useState(Math.min(50, capPercent));
 
   if (!canResolve) {
     return (
@@ -69,6 +77,16 @@ export function DisputeDecisionForm({
 
       {state.error ? <Alert tone="error">{state.error}</Alert> : null}
 
+      {clientRefundCapBps === null ? null : (
+        <Alert tone="info">
+          This case came from a cancellation more than half way through the deadline, so
+          spec §5 caps the client at {capPercent}% of the budget —{" "}
+          {formatPaise(Math.floor((budgetPaise * capPercent) / 100))}. A full refund is not
+          available on it, and <code className="text-xs">resolve_dispute()</code> refuses
+          anything above the cap whatever this form sends.
+        </Alert>
+      )}
+
       <fieldset className="space-y-3">
         <legend className="text-sm font-medium">Outcome</legend>
 
@@ -80,17 +98,25 @@ export function DisputeDecisionForm({
             checked={outcome === "release"}
             onSelect={setOutcome}
           />
-          <OutcomeChoice
-            value="refund"
-            label="Refund"
-            detail={`All ${formatPaise(budgetPaise)} back to the client.`}
-            checked={outcome === "refund"}
-            onSelect={setOutcome}
-          />
+          {/* A refund is 100% to the client, so a capped case cannot have one.
+              Taken off the screen rather than shown and refused on submit. */}
+          {capPercent >= 100 ? (
+            <OutcomeChoice
+              value="refund"
+              label="Refund"
+              detail={`All ${formatPaise(budgetPaise)} back to the client.`}
+              checked={outcome === "refund"}
+              onSelect={setOutcome}
+            />
+          ) : null}
           <OutcomeChoice
             value="split"
             label="Split"
-            detail="Divide it between them."
+            detail={
+              capPercent >= 100
+                ? "Divide it between them."
+                : `Divide it — up to ${capPercent}% to the client.`
+            }
             checked={outcome === "split"}
             onSelect={setOutcome}
           />
@@ -104,12 +130,16 @@ export function DisputeDecisionForm({
             label="The client's share"
             type="number"
             min={0}
-            max={100}
+            max={capPercent}
             step={1}
             value={clientPercent}
             onChange={(event) => setClientPercent(Number(event.target.value))}
             error={state.fieldErrors?.clientPercent}
-            hint="Whole percents. The rest goes to the worker."
+            hint={
+              capPercent >= 100
+                ? "Whole percents. The rest goes to the worker."
+                : `Whole percents, up to ${capPercent}. The rest goes to the worker.`
+            }
           />
           <p className="text-muted text-sm">
             Client {formatPaise(clientShare)} · worker {formatPaise(workerShare)}, before the

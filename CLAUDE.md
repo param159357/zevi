@@ -40,17 +40,23 @@ one-screen case with the three outcomes behind it; users can be searched, read
 whole and warned, suspended or banned; payout batches can be reviewed before a
 run and failed payouts returned to the next cycle.
 
+And a job can now end badly as well as well. A client can cancel, and spec §5's
+five tiers decide what that costs: nothing before anyone is picked, ₹15 inside
+the first 30% of the worker's window, 80/20 and ₹15 up to half, and past half a
+person decides with the client capped at 70%. Either side can raise a dispute,
+which freezes escrow, stops the auto-accept clock and puts the case in front of
+the console with both statements on it — so the queue spec §7 built is no longer
+correct and empty, it is correct and reachable.
+
 Nothing beyond that: no chat, no ratings — and **money still cannot leave the
 platform account**. The batch assembles and stops: the disbursement step that
 turns a `payouts` row into a bank transfer, writes `payout_paid` to the ledger
 and handles a failure is not built. That is still the single thing standing
-between this and a worker holding the money, and it is now also what stands
-between a decided dispute and a client's refund: `resolve_dispute()` moves the
-worker's share through the ledger and leaves the client's as a `pending` refund
-row, because Razorpay's refund API is unwired too. **Nothing raises a dispute
-yet** — spec §4's step 8 gives the client accept, revise or dispute and only the
-first two are built — so the queue is correct and empty. SES, Sentry and SMS are
-unwired, and uploads sit in Supabase Storage until R2 replaces it.
+between this and a worker holding the money, and it is equally what stands
+between a decided dispute or a cancellation and the client's refund: both move
+the worker's share through the ledger and leave the client's as a `pending`
+refund row, because Razorpay's refund API is unwired too. SES, Sentry and SMS
+are unwired, and uploads sit in Supabase Storage until R2 replaces it.
 
 ---
 
@@ -61,7 +67,8 @@ npm run dev      # dev server on :3000 (Turbopack)
 npm run build    # production build
 npm run start    # serve the production build
 npm run lint     # eslint
-npm test         # vitest — commission, payment signatures, payout calendar, KYC names
+npm test         # vitest — commission, payment signatures, payout calendar, KYC
+                 # names, cancellation tiers
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -142,8 +149,9 @@ src/
 ├── app/
 │   ├── (marketing)/     public pages — landing, legal, category browse
 │   ├── (auth)/          signup, login, the two verification steps
-│   ├── (client)/        job posters: post, shortlist, review, dashboard
+│   ├── (client)/        job posters: post, shortlist, review, dashboard, cancel
 │   ├── (worker)/        workers: feed, opt-in, deliver, earnings, KYC
+│   ├── (shared)/        screens both sides of a job open: the dispute case
 │   ├── (admin)/         work queue: approvals, KYC, disputes, payouts, users
 │   ├── auth/callback/   where the email confirmation link lands
 │   ├── api/             route handlers — webhooks (Razorpay), cron, uploads
@@ -166,6 +174,8 @@ src/
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
 │   ├── payouts/         the twice-weekly cycle: cycle · eligibility · queries · types
+│   ├── cancellations/   spec §5's tiers: tiers (the calculator) · actions · queries · types
+│   ├── disputes/        raising and answering one: actions · queries · validation · types
 │   ├── kyc/             identity before the first payout: actions · queries · razorpay · names · hash · validation · types
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
@@ -182,6 +192,14 @@ supabase/
 
 Route groups `(client)` / `(worker)` / `(admin)` are URL-invisible — they exist
 to separate layouts and auth boundaries, not to add path segments.
+
+`(shared)` is the fourth and the only one whose guard is not a role.
+`requireUser()` is all it can check, because spec §11 lets either side raise a
+dispute and both sides read the same case — a role guard there would lock out
+whichever party was not picked, which is half of them. Who may read a given case
+is decided by RLS (`both sides read the dispute`, `is_dispute_party`) and the
+page 404s on the empty result. Put a screen there only when both sides genuinely
+open the same one.
 
 ---
 
@@ -231,7 +249,7 @@ Rules:
 
 ### Schema
 
-35 migrations, 81 tables, RLS on every one. What to know before writing a query:
+36 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -293,6 +311,20 @@ Rules:
   way. Only the worker's share moves through the ledger; the client's becomes a
   `pending` refund, so the escrow account's balance stays equal to what the
   platform actually holds.
+- **A dispute is raised by `open_dispute()` and answered by
+  `respond_to_dispute()`** (0036), and 0015's two INSERT policies were dropped
+  with the grants for the reason 0030 dropped delivery's three: each write moves
+  a row the same statement cannot finish. Raising one freezes escrow, moves the
+  job to `disputed` **and moves a `pending_review` delivery to `disputed`** —
+  that third write is what stops the auto-accept clock, because
+  `job_deliveries_auto_accept_idx` is partial on `pending_review`. Without it the
+  sweep reaches the job hourly and fails on the frozen hold forever.
+- **A cancellation past half the deadline is a dispute, not a formula** (0036).
+  Spec §5's first three rows are arithmetic and `request_job_cancellation()`
+  applies them; the fourth names a reviewer, so it opens a case carrying
+  `disputes.client_refund_cap_bps` = 7000, and `resolve_dispute()` refuses any
+  outcome giving the client more. The console form also hides `refund` on a
+  capped case — two checks, because a disabled radio button is not a rule.
 - **`profiles.status` is moved by `apply_user_sanction()` and nowhere else**
   (0034). It writes the `user_sanctions` row, the status change and the audit
   row in one transaction, refuses a target who is an active console member, and
@@ -648,10 +680,12 @@ request_job_revision()  the one free one   job → revision_requested, clock sto
   will be deciding blind and asks for a PDF export alongside the source. Text
   and CSV get spec §6's other half: the body inline, no URL minted at all.
 - **One free revision, and the second is refused rather than half-built.** Spec
-  §5 gives it "only by worker agreement, otherwise dispute", and neither the
-  agreement flow nor disputes exist. `job_revisions.due_at` stays null for the
-  same reason — the spec sets no revision turnaround, and inventing one invents
-  a lateness penalty with it.
+  §5 gives it "only by worker agreement, otherwise dispute". The dispute half
+  exists now (0036) and the review screen offers it as the third ending; the
+  worker-agreement half still does not, so `request_job_revision()` refuses past
+  the free one and the copy points at a case rather than at support.
+  `job_revisions.due_at` stays null — the spec sets no revision turnaround, and
+  inventing one invents a lateness penalty with it.
 - **Reminders are not built.** Spec §5 wants nudges at 12h/30h and 24h/60h;
   there is no email provider, so `reminder_1_sent_at` and `reminder_2_sent_at`
   stay null rather than being stamped for a message nobody sent.
@@ -789,10 +823,16 @@ settle_worker_kyc()              verified · blocked · failed
 
 Spec §7's dispute module and spec §11's three outcomes. V1 is layer 3 only —
 §16 cuts the four-layer system down to "handle disputes personally at first" —
-so `resolve_dispute()` (0034) is a human decision and there is no auto-resolver,
-no self-settlement screen and no instant split.
+so `resolve_dispute()` (0034, replaced by 0036) is a human decision and there is
+no auto-resolver, no self-settlement screen and no instant split.
 
 ```
+open_dispute()        either side raises      escrow frozen, job → disputed,
+   ↓                                          the auto-accept clock stops
+respond_to_dispute()  the other side's 24h    → admin_review
+   ↓
+resolve_dispute()     a person decides
+   ·
 release   escrow → worker payable + revenue + tax     the acceptance ledger
 refund    escrow → a `pending` refunds row            nothing moves yet
 split     both, pro-rated by split_client_bps
@@ -824,12 +864,89 @@ split     both, pro-rated by split_client_bps
   `view_disputes` is the only thing that reads it; `messages.body` is what the
   parties saw. A case about off-platform contact is unarguable from the first
   and invisible in the second — which is why 0009 split them.
-- **Nothing raises a dispute.** Spec §4's step 8 gives the client accept, revise
-  or dispute; the third is not built, on either side. The queue is correct and
-  empty, and `resolve_dispute()` is lint-clean but has not been exercised at
-  runtime — the same position `cancel_payout_batch()` is in, and for the same
-  reason: exercising it would leave a permanently misleading row in what is an
-  audit trail.
+- **Both windows are spec §11's and they differ by side.** A client may raise one
+  from delivery until 48 hours after acceptance; a worker from assignment until
+  they are paid. The client's window deliberately runs past acceptance, and a
+  case that lands there **cannot be decided**: `resolve_dispute()` refuses on
+  `escrow_settled`, because reversing a paid earning is a flow that is not built.
+  Opening it anyway is the honest half — the complaint is recorded and the
+  console says at the top of the case why the money cannot move — rather than
+  telling a client inside their stated window that the door does not exist. The
+  first thing to build here is that clawback (`earning_status` has 'reversed').
+- **Each side gets one statement, and the 24 hours are not enforced.** What
+  expires is the waiting, not the right to speak: the case goes to a reviewer
+  either way, and a statement arriving late is worth more to them than a refusal
+  issued on their behalf. The screen offers the form once per side; a second from
+  the same side leaves the status where it is.
+- **`user_private_stats` is written here and nowhere else.**
+  `disputes_raised` / `disputes_against` at open, `disputes_lost` at decision —
+  release marks the client, refund marks the worker, and a split marks nobody,
+  because the outcome saying both had a point should not go on a record read as
+  "times this person was wrong". `dispute_rate_bps` is deliberately left at 0: a
+  rate needs a denominator and spec §11 names none.
+- **`resolve_dispute()` has still not been exercised at runtime** — the same
+  position `cancel_payout_batch()` is in, and for the same reason: exercising it
+  would leave a permanently misleading row in what is an audit trail. It is
+  lint-clean and now reachable, which is the change 0036 made.
+
+---
+
+## Cancellation
+
+Spec §5's other table, and the fourth moment money moves.
+
+```
+pre_assignment   nobody picked        nothing was ever charged, no fee
+early   ≤30%     full, minus ₹15
+mid     31–50%   80% client / 20% worker, minus ₹15
+late    >50%     opens a capped dispute — a person decides
+post_delivery    refused: accept, revise, or dispute
+```
+
+- **The calculator is in TypeScript and the decision is in the database.** Same
+  division `lib/payouts/cycle.ts` has with `build_payout_batch()`, and for the
+  same reason: a client cannot be asked to confirm something irreversible without
+  being shown what it costs, and the screen needs that figure before any row is
+  locked. `lib/cancellations/tiers.ts` is what the screen quotes and what
+  `tiers.test.ts` checks against spec §5 row by row;
+  `request_job_cancellation()` derives the tier again from its own `now()` under
+  the job's row lock and **that** is the decision. When the two disagree — a
+  confirmation left open across a boundary — the function wins and the action
+  reports the tier it actually applied, which is why `CancelResult` carries the
+  tier back rather than the screen assuming it.
+- **"% of deadline elapsed" is measured from assignment, not from posting.** The
+  deadline is set at posting, but nobody is working against it until someone is
+  picked, and the middle tier exists to pay a worker for time already spent. A
+  job that sat open for a fortnight would otherwise land past half on its first
+  real day of work. The pre-assignment tier covers everything before that, so the
+  two together are total.
+- **Floored, not rounded**, in both implementations. Basis points are the
+  resolution of the decision, so a boundary is crossed only once a whole one has
+  passed — on a ten-day window, 86.4 seconds. Rounding would push a client into
+  the worse tier while less than a full unit had elapsed; flooring never
+  overstates the time spent, so the quantisation falls the client's way.
+- **The ₹15 comes from `fee_schedule`, not from a literal.** `fee_amount_paise()`
+  reads the row in effect at that moment and honours `waived_below_paise`, which
+  nothing sets today — so the day someone decides a ₹149 job should not carry the
+  fee, that decision already works. Capped at what is left after the worker's
+  share, so a refund can never come out negative.
+- **No GST on the fee.** Spec §8 applies 18% "on commission from both sides"; the
+  ₹15 is under "Other fees", separately. A tax line nobody asked for would put a
+  number in `tax_payable` that no CA can explain.
+- **The fee moves through the ledger and the refund does not.** Escrow → platform
+  revenue for the fee and the worker's share; the client's refund is a `pending`
+  `refunds` row with no entry at all, because nothing has left the gateway
+  account. Same rule as 0034's, for the same unwired API, and it is what keeps
+  the escrow balance equal to what is actually held.
+- **Both doors exist and they are on different screens.** An unassigned job lives
+  on `/shortlist/[jobId]` and that is where its cancel panel is; once someone is
+  picked the job moves to `/review/[jobId]` and the panel goes with it, because
+  from then on the tier depends on the clock and that screen is where the clock
+  is. A tier with no door is a tier that does not exist.
+- **Worker-side cancellation is not built.** Spec §5's table is the client's; a
+  worker walking away is spec §6's abandonment, which carries a rating delta, a
+  debit and a next-job cap that nothing computes yet. A worker who wants out
+  raises a dispute, which is the door spec §11 gives them.
 
 ## Money
 

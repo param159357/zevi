@@ -8,9 +8,11 @@ import { EarningSummary } from "@/components/deliveries/EarningSummary";
 import { Alert } from "@/components/ui/Alert";
 import { requireRole } from "@/lib/auth/session";
 import { autoAcceptWindowLabel } from "@/lib/constants/deliveries";
+import { DISPUTE_ROUTES } from "@/lib/constants/disputes";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
 import { loadWorkerJobWork } from "@/lib/deliveries/queries";
 import type { WorkerJobWork } from "@/lib/deliveries/types";
+import { liveDisputeForJob } from "@/lib/disputes/queries";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateShort, formatRemaining } from "@/lib/utils/format";
 import { formatPaiseCompact } from "@/lib/utils/money";
@@ -35,7 +37,11 @@ export default async function WorkerDeliverPage({
   const supabase = await createClient();
 
   const { jobId } = await params;
-  const work = await loadWorkerJobWork(supabase, context.user.id, jobId);
+
+  const [work, dispute] = await Promise.all([
+    loadWorkerJobWork(supabase, context.user.id, jobId),
+    liveDisputeForJob(supabase, jobId),
+  ]);
 
   // RLS decided this, not the line below: a job this worker was not assigned
   // never came back at all. 404 is what that should look like.
@@ -43,6 +49,15 @@ export default async function WorkerDeliverPage({
 
   const openRevision = work.revisions.find((revision) => revision.status === "requested");
   const awaiting = work.deliveries.find((delivery) => delivery.status === "pending_review");
+
+  // Spec §11 gives the worker a window from assignment until they are paid, so
+  // the door stays open for most of a job's life — including after a delivery,
+  // which is when a worker most often needs it.
+  const canRaise =
+    dispute === null &&
+    work.earning?.status !== "paid" &&
+    work.earning?.status !== "in_payout" &&
+    work.status !== "cancelled";
 
   return (
     <div className="space-y-6">
@@ -73,6 +88,16 @@ export default async function WorkerDeliverPage({
       </div>
 
       <StatusNotice work={work} />
+
+      {dispute ? (
+        <Alert tone="error">
+          There is an open case on this job and the money is frozen until it is decided.{" "}
+          <Link href={DISPUTE_ROUTES.case(dispute.disputeId)} className="underline">
+            See where it has got to
+          </Link>
+          .
+        </Alert>
+      ) : null}
 
       {openRevision ? (
         <section className="border-danger/40 bg-danger/8 space-y-2 rounded-xl border p-4">
@@ -131,6 +156,22 @@ export default async function WorkerDeliverPage({
         <p className="text-muted text-xs">
           Keep your own copy — delivered files are removed from Zevi seven days after
           the job is accepted.
+        </p>
+      ) : null}
+
+      {/* Spec §11: "both sides can raise a dispute". Last on the page and quiet
+          about it — a worker's normal path through this screen is to deliver, and
+          this is the door for when something has gone wrong instead. */}
+      {canRaise ? (
+        <p className="text-muted border-border border-t pt-6 text-xs">
+          Something wrong with this job?{" "}
+          <Link
+            href={DISPUTE_ROUTES.raise(work.jobId)}
+            className="text-accent underline-offset-4 hover:underline"
+          >
+            Open a case
+          </Link>{" "}
+          and one of us will look at it. The money freezes until it is decided.
         </p>
       ) : null}
     </div>

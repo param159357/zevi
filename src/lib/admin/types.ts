@@ -218,6 +218,16 @@ export type DisputeCase = {
    *  what `resolve_dispute()` refuses on, so the screen says it first. */
   escrowHeldPaise: number | null;
   escrowStatus: string | null;
+  /**
+   * Spec §5's 70% ceiling, set when a cancellation more than half way through
+   * the deadline opened this case. Null on an ordinary dispute — §11 caps
+   * nothing when the complaint is about the work itself.
+   *
+   * The form reads it to take the outcomes it forbids off the screen, and
+   * `resolve_dispute()` refuses them again if one arrives anyway. Two checks,
+   * because a disabled radio button is not a rule.
+   */
+  clientRefundCapBps: number | null;
   client: DisputeParty | null;
   worker: DisputeParty | null;
   statements: DisputeStatement[];

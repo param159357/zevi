@@ -4,12 +4,16 @@ import { notFound } from "next/navigation";
 
 import { DeliveryAttemptPanel } from "@/components/deliveries/DeliveryAttemptPanel";
 import { ReviewActions } from "@/components/deliveries/ReviewActions";
+import { CancelJobForm } from "@/components/jobs/CancelJobForm";
 import { Alert } from "@/components/ui/Alert";
 import { requireRole } from "@/lib/auth/session";
+import { loadCancellationPreview } from "@/lib/cancellations/queries";
 import { RETENTION_DAYS_ACCEPTED, autoAcceptWindowLabel } from "@/lib/constants/deliveries";
+import { DISPUTE_ROUTES } from "@/lib/constants/disputes";
 import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { loadDeliveryReview } from "@/lib/deliveries/queries";
 import type { DeliveryReview } from "@/lib/deliveries/types";
+import { liveDisputeForJob } from "@/lib/disputes/queries";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateShort, formatRemaining } from "@/lib/utils/format";
 import { formatPaiseCompact } from "@/lib/utils/money";
@@ -17,13 +21,16 @@ import { formatPaiseCompact } from "@/lib/utils/money";
 export const metadata: Metadata = { title: "Review the work · Zevi" };
 
 /**
- * Spec §5, "Reviewing delivery": accept, ask for the one free revision, or let
- * the clock decide.
+ * Spec §5, "Reviewing delivery": accept, ask for the one free revision, open a
+ * case, or let the clock decide.
  *
- * Dispute is the third ending the spec lists and it is not here, because the
- * four-layer resolution flow (§11) is explicitly out of V1 (§16). A button that
- * opened nothing would be worse than the sentence under the actions pointing at
- * support.
+ * All three endings the spec lists are here now. The fourth thing this screen
+ * carries is cancellation (spec §5's other table), which is a different question
+ * — it applies *before* anything is delivered, and the moment a worker has sent
+ * something the tiers stop and the three endings above are the only doors. That
+ * is why the cancel panel is rendered from its own quote rather than from the
+ * job's status: `quoteCancellation()` is what knows which of those two worlds
+ * this job is in.
  */
 export default async function ReviewPage({
   params,
@@ -34,7 +41,12 @@ export default async function ReviewPage({
   const supabase = await createClient();
 
   const { jobId } = await params;
-  const review = await loadDeliveryReview(supabase, jobId, context.user.id);
+
+  const [review, cancellation, dispute] = await Promise.all([
+    loadDeliveryReview(supabase, jobId, context.user.id),
+    loadCancellationPreview(supabase, jobId, context.user.id),
+    liveDisputeForJob(supabase, jobId),
+  ]);
 
   // Someone else's job never came back from the query at all — RLS decided
   // that. A 404 is what that should look like.
@@ -75,12 +87,23 @@ export default async function ReviewPage({
 
       <StatusNotice review={review} />
 
+      {dispute ? (
+        <Alert tone="error">
+          There is an open case on this job and the money is frozen until it is decided.{" "}
+          <Link href={DISPUTE_ROUTES.case(dispute.disputeId)} className="underline">
+            See where it has got to
+          </Link>
+          .
+        </Alert>
+      ) : null}
+
       {open ? (
         <section className="space-y-4">
           <DeliveryAttemptPanel delivery={open} viewer="client" />
 
           <ReviewActions
             deliveryId={open.id}
+            jobId={review.jobId}
             workerName={review.workerName}
             freeRevisionsLeft={review.freeRevisionsLeft}
           />
@@ -118,6 +141,20 @@ export default async function ReviewPage({
               dimmed={delivery.status === "superseded"}
             />
           ))}
+        </section>
+      ) : null}
+
+      {/* Spec §5's cancellation table. Last on the page on purpose: it is the
+          thing to do when none of the above is what you wanted, and a client
+          scanning for "accept" should not meet it first. */}
+      {cancellation?.offered ? (
+        <section className="border-border space-y-3 border-t pt-6">
+          <h2 className="text-sm font-medium">Cancel this job</h2>
+          <CancelJobForm
+            jobId={cancellation.jobId}
+            quote={cancellation.quote}
+            workerName={cancellation.workerName}
+          />
         </section>
       ) : null}
     </div>
@@ -171,11 +208,23 @@ function StatusNotice({ review }: { review: DeliveryReview }) {
   }
 
   if (review.status === "disputed") {
-    return <Alert tone="error">This job is in dispute. We&apos;ll be in touch.</Alert>;
+    // The banner above this carries the link and the detail; this only says
+    // where the job itself has got to.
+    return (
+      <Alert tone="error">
+        This job is on hold while the case is decided. Nothing more is expected from you
+        until then.
+      </Alert>
+    );
   }
 
   if (review.status === "cancelled") {
-    return <Alert>This job was cancelled.</Alert>;
+    return (
+      <Alert>
+        This job was cancelled. Any refund goes back to the card or account you paid with,
+        and takes 5–7 working days.
+      </Alert>
+    );
   }
 
   return <Alert>Nothing has been delivered on this job yet.</Alert>;

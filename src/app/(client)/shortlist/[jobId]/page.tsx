@@ -2,10 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { CancelJobForm } from "@/components/jobs/CancelJobForm";
 import { FeeBreakdown } from "@/components/jobs/FeeBreakdown";
 import { ShortlistCard } from "@/components/matching/ShortlistCard";
 import { Alert } from "@/components/ui/Alert";
 import { requireRole } from "@/lib/auth/session";
+import { loadCancellationPreview } from "@/lib/cancellations/queries";
 import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { isRazorpayConfigured } from "@/lib/env";
 import { SHORTLIST_PAGE_SIZE, SHORTLIST_PICKED_PARAM } from "@/lib/constants/matching";
@@ -39,7 +41,11 @@ export default async function ShortlistPage({
   const supabase = await createClient();
 
   const [{ jobId }, query] = await Promise.all([params, searchParams]);
-  const shortlist = await loadShortlist(supabase, jobId, context.user.id);
+
+  const [shortlist, cancellation] = await Promise.all([
+    loadShortlist(supabase, jobId, context.user.id),
+    loadCancellationPreview(supabase, jobId, context.user.id),
+  ]);
 
   // Someone else's job never came back from the query at all — RLS decided
   // that, not the line above. A 404 is what that should look like.
@@ -147,6 +153,22 @@ export default async function ShortlistPage({
               />
             ))}
           </ul>
+        </section>
+      ) : null}
+
+      {/* Spec §5's first row — "no worker assigned yet: full, instant, no fee" —
+          needs a door, and this is the screen an unassigned job lives on. Once
+          someone is picked the job moves to `/review/[jobId]` and the cancel
+          panel goes with it, because from then on the tiers depend on the clock
+          and that screen is where the clock is. */}
+      {cancellation?.offered && shortlist.assignedWorkerId === null ? (
+        <section className="border-border space-y-3 border-t pt-6">
+          <h2 className="text-sm font-medium">Changed your mind?</h2>
+          <CancelJobForm
+            jobId={cancellation.jobId}
+            quote={cancellation.quote}
+            workerName={cancellation.workerName}
+          />
         </section>
       ) : null}
     </div>

@@ -137,6 +137,14 @@ export async function resolveDispute(
       };
     case "escrow_settled":
       return { status: "error", error: data.detail ?? "There is nothing left in escrow to divide." };
+    case "over_cap":
+      // Spec §5's 70% ceiling on a late cancellation. The form takes the
+      // forbidden outcomes off the screen, so reaching this means the cap was
+      // set after the page rendered, or the post came from somewhere else.
+      return {
+        status: "error",
+        error: data.detail ?? "That would give the client more than this case allows.",
+      };
     case "not_priced":
       return { status: "error", error: data.detail ?? "This job has no frozen price." };
     case "note_required":

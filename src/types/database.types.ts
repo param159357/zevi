@@ -979,6 +979,7 @@ export type Database = {
         Row: {
           amount_paise: number
           auto_resolved: boolean
+          client_refund_cap_bps: number | null
           closed_at: string | null
           created_at: string
           decided_at: string | null
@@ -1005,6 +1006,7 @@ export type Database = {
         Insert: {
           amount_paise: number
           auto_resolved?: boolean
+          client_refund_cap_bps?: number | null
           closed_at?: string | null
           created_at?: string
           decided_at?: string | null
@@ -1031,6 +1033,7 @@ export type Database = {
         Update: {
           amount_paise?: number
           auto_resolved?: boolean
+          client_refund_cap_bps?: number | null
           closed_at?: string | null
           created_at?: string
           decided_at?: string | null
@@ -5120,6 +5123,10 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      fee_amount_paise: {
+        Args: { p_amount?: number; p_at?: string; p_code: string }
+        Returns: number
+      }
       is_active_worker: { Args: { uid?: string }; Returns: boolean }
       is_admin: { Args: never; Returns: boolean }
       is_admin_account: { Args: { p_profile_id: string }; Returns: boolean }
@@ -5144,6 +5151,21 @@ export type Database = {
         }[]
       }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }
+      open_dispute: {
+        Args: {
+          p_actor_id: string
+          p_client_cap_bps?: number
+          p_job_id: string
+          p_reason: string
+          p_statement: string
+        }
+        Returns: {
+          amount_paise: number
+          detail: string
+          dispute_id: string
+          status: string
+        }[]
+      }
       open_job_payment: {
         Args: {
           p_actor_id: string
@@ -5231,6 +5253,19 @@ export type Database = {
         Returns: string
       }
       release_matured_earning_holds: { Args: never; Returns: number }
+      request_job_cancellation: {
+        Args: { p_client_id: string; p_job_id: string; p_reason: string }
+        Returns: {
+          client_refund_paise: number
+          detail: string
+          dispute_id: string
+          elapsed_bps: number
+          fee_paise: number
+          status: string
+          tier: Database["public"]["Enums"]["cancellation_tier"]
+          worker_paise: number
+        }[]
+      }
       request_job_revision: {
         Args: { p_actor_id: string; p_delivery_id: string; p_reason: string }
         Returns: {
@@ -5283,6 +5318,14 @@ export type Database = {
           outcome: Database["public"]["Enums"]["dispute_outcome"]
           status: string
           worker_paise: number
+        }[]
+      }
+      respond_to_dispute: {
+        Args: { p_actor_id: string; p_dispute_id: string; p_statement: string }
+        Returns: {
+          detail: string
+          statement_id: string
+          status: string
         }[]
       }
       retry_failed_payout: {
