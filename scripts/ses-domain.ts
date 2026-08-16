@@ -7,6 +7,9 @@
  *                                                 Easy DKIM, set the custom
  *                                                 MAIL FROM, print the DNS
  *   node scripts/ses-domain.ts status  zevi.in    where verification has got to
+ *   node scripts/ses-domain.ts notifications <configuration-set> <topic-arn>
+ *                                                 publish bounces and
+ *                                                 complaints to an SNS topic
  *
  * ### What it can and cannot do
  *
@@ -16,6 +19,12 @@
  * business reaching — so it prints them and then tells you what to run to check
  * whether they have propagated. That division is the whole reason this is a
  * script and not a migration.
+ *
+ * The same division applies to `notifications`. It does the SES side — the
+ * configuration set and the event destination pointed at a topic — and not the
+ * SNS side, because creating a topic and subscribing an endpoint to it is two
+ * `aws sns` commands against a service this codebase otherwise never touches.
+ * Those two commands are in docs/email-setup.md.
  *
  * ### Why a custom MAIL FROM, when DKIM alone would pass DMARC
  *
@@ -288,18 +297,125 @@ async function status(domain: string): Promise<void> {
   }
 }
 
+/**
+ * Point bounces and complaints at an SNS topic.
+ *
+ * Two SES calls, both idempotent enough to re-run: the configuration set, and
+ * an event destination on it publishing to the topic. The endpoint that reads
+ * the topic is `/api/webhooks/ses`, and it refuses every delivery until
+ * `SES_SNS_TOPIC_ARN` matches what is passed here.
+ *
+ * **DELIVERY is deliberately not among the events.** Subscribing it would put a
+ * row in `email_events` for every message that arrives safely — the overwhelming
+ * majority — in exchange for a fact `email_outbox.status` already records. The
+ * four below are the ones something is done about: two suppress an address, one
+ * means SES refused to send at all, and the fourth is the only way to tell a
+ * slow receiver from a broken one.
+ */
+async function notifications(configurationSet: string, topicArn: string): Promise<void> {
+  const destinationName = "zevi-feedback";
+  const events = ["BOUNCE", "COMPLAINT", "REJECT", "DELIVERY_DELAY"];
+
+  console.log(`Publishing ${events.join(", ")} from "${configurationSet}" to the topic.\n`);
+
+  try {
+    await ses({
+      method: "POST",
+      path: "/v2/email/configuration-sets",
+      body: { ConfigurationSetName: configurationSet },
+    });
+    console.log(`Created the configuration set "${configurationSet}".`);
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? "";
+    if (code !== "AlreadyExistsException") throw error;
+    console.log(`The configuration set "${configurationSet}" already exists.`);
+  }
+
+  const destination = {
+    Enabled: true,
+    MatchingEventTypes: events,
+    SnsDestination: { TopicArn: topicArn },
+  };
+
+  try {
+    await ses({
+      method: "POST",
+      path: `/v2/email/configuration-sets/${configurationSet}/event-destinations`,
+      body: { EventDestinationName: destinationName, EventDestination: destination },
+    });
+    console.log(`Created the event destination "${destinationName}".`);
+  } catch (error) {
+    const code = (error as { code?: string }).code ?? "";
+    if (code !== "AlreadyExistsException") throw error;
+
+    await ses({
+      method: "PUT",
+      path:
+        `/v2/email/configuration-sets/${configurationSet}` +
+        `/event-destinations/${destinationName}`,
+      body: { EventDestination: destination },
+    });
+    console.log(`Updated the existing event destination "${destinationName}".`);
+  }
+
+  console.log(
+    "\nSES will publish to the topic from now on. Two things remain, and both\n" +
+      "are outside SES — docs/email-setup.md has the commands:\n\n" +
+      "  1. subscribe <origin>/api/webhooks/ses to the topic, and let the\n" +
+      "     endpoint confirm it (it does that itself, once the ARN is set)\n" +
+      "  2. set these in the environment, or nothing is attributed and the\n" +
+      "     endpoint refuses every delivery:\n\n" +
+      `       SES_CONFIGURATION_SET=${configurationSet}\n` +
+      `       SES_SNS_TOPIC_ARN=${topicArn}\n`,
+  );
+}
+
 // ---------------------------------------------------------------------------
+
+const USAGE =
+  "usage: node scripts/ses-domain.ts <setup|status> <domain>\n" +
+  "       node scripts/ses-domain.ts notifications <configuration-set> <topic-arn>\n" +
+  "  e.g. node scripts/ses-domain.ts setup zevi.in\n" +
+  "       node scripts/ses-domain.ts notifications zevi-email \\\n" +
+  "         arn:aws:sns:ap-south-1:123456789012:zevi-email-feedback";
 
 async function main(): Promise<void> {
   loadEnvFile(".env.local");
 
-  const [command, domain] = process.argv.slice(2);
+  const [command, first, second] = process.argv.slice(2);
+
+  if (command === "notifications") {
+    if (!first || !second) {
+      console.error(USAGE);
+      process.exit(1);
+    }
+
+    // The name goes into the request path, and `signRequest` refuses a path
+    // needing URI encoding rather than signing something it cannot promise.
+    // Catching it here says which argument is wrong.
+    if (!/^[A-Za-z0-9_-]+$/.test(first)) {
+      console.error(
+        `"${first}" is not a configuration set name — letters, digits, dashes and underscores only.`,
+      );
+      process.exit(1);
+    }
+
+    if (!/^arn:aws[a-z-]*:sns:[a-z0-9-]+:\d{12}:[A-Za-z0-9_-]+$/.test(second)) {
+      console.error(
+        `"${second}" is not an SNS topic ARN.\n` +
+          "  e.g. arn:aws:sns:ap-south-1:123456789012:zevi-email-feedback",
+      );
+      process.exit(1);
+    }
+
+    await notifications(first, second);
+    return;
+  }
+
+  const domain = first;
 
   if ((command !== "setup" && command !== "status") || !domain) {
-    console.error(
-      "usage: node scripts/ses-domain.ts <setup|status> <domain>\n" +
-        "  e.g. node scripts/ses-domain.ts setup zevi.in",
-    );
+    console.error(USAGE);
     process.exit(1);
   }
 

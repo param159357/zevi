@@ -63,14 +63,23 @@ thinks, and on confirmation credits escrow, debits external and closes the row.
 Neither caller needed a change — they were already writing the instruction, and
 this is the reader arriving.
 
+And the platform can now hear back. SES reports a bounce or a complaint
+asynchronously to an SNS topic, and migration 0039 is the endpoint that
+subscribes to one: the envelope's signature verified against Amazon's
+certificate, the topic ARN checked against ours, the event written to an
+append-only log, the outbox row moved to `bounced` or `complained` — and the
+address suppressed, permanently on a hard bounce or a complaint and on the third
+soft bounce in a week. That is the value `email_status` has had since 0017 with
+nothing to set it, and it is what keeps a hundred dead addresses from costing the
+account Amazon measures across all of it.
+
 Nothing beyond that: no chat, no ratings — and **money still cannot reach a
 worker**. The payout batch assembles and stops: the disbursement step that turns
 a `payouts` row into a bank transfer, writes `payout_paid` to the ledger and
 handles a failure is not built. That is now the single thing standing between
 this and a worker holding the money, and with refunds wired it is the last money
-path that ends in a row rather than a transfer. Sentry and SMS are unwired, SES
-cannot yet hear about a bounce, and uploads sit in Supabase Storage until R2
-replaces it.
+path that ends in a row rather than a transfer. Sentry and SMS are unwired, and
+uploads sit in Supabase Storage until R2 replaces it.
 
 ---
 
@@ -83,7 +92,8 @@ npm run start    # serve the production build
 npm run lint     # eslint
 npm test         # vitest — commission, payment signatures, payout calendar, KYC
                  # names, cancellation tiers, SigV4 vectors, email templates,
-                 # the gateway cost a refund absorbs
+                 # the gateway cost a refund absorbs, the SNS signature check
+                 # and the SES feedback parser
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -116,6 +126,12 @@ curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/refu
 # SPF align, and the DNS records to publish. Node runs the TypeScript directly.
 node scripts/ses-domain.ts setup zevi.in
 node scripts/ses-domain.ts status zevi.in
+
+# Point bounces and complaints at an SNS topic: the configuration set, and an
+# event destination on it for BOUNCE, COMPLAINT, REJECT and DELIVERY_DELAY. The
+# topic itself and the subscription are two `aws sns` commands, in
+# docs/email-setup.md — SNS is a service nothing else here touches.
+node scripts/ses-domain.ts notifications zevi-email arn:aws:sns:ap-south-1:…
 
 # plpgsql_check against the linked project. Run it after any new function that
 # writes money — it catches the ambiguous-column class of bug that `db push`
@@ -228,7 +244,8 @@ src/
 │   ├── email/           spec §15: sigv4 · ses · send (the seam) · document ·
 │   │                    render · template · templates/ (the thirteen) ·
 │   │                    samples · outbox (queue + drain) · events (the call
-│   │                    sites) · links
+│   │                    sites) · links · sns (the envelope a bounce arrives
+│   │                    in) · feedback (what SES says happened afterwards)
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
@@ -304,7 +321,7 @@ Rules:
 
 ### Schema
 
-38 migrations, 81 tables, RLS on every one. What to know before writing a query:
+39 migrations, 83 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -391,6 +408,17 @@ Rules:
   `refund_issued` ledger transaction, takes no amount, and refuses to credit a
   job's escrow more than it has left — the arithmetic under the lock, so a
   double refund cannot balance even if one is somehow issued.
+- **A suppressed address is checked by `enqueue_email()` and written by
+  `record_email_feedback()`** (0039), which applies the log row, the outbox row's
+  status and the suppression in one transaction — a suppression with no event
+  behind it is a user cut off for no recorded reason, and an event with no
+  suppression is a bounce we noticed and did nothing about. It is idempotent on
+  SNS's envelope id (`email_events` is unique on `(sns_message_id, recipient)`),
+  because SNS delivers at least once and retries a 500 for days. `email_events`
+  is append-only by trigger: it is the evidence behind a suppression, and a
+  support conversation eventually attaches to it. The list is keyed on the
+  *address*, not the profile — that is what SES reports and what the mailbox
+  rejected, so two accounts sharing a work address are suppressed together.
 - **`profiles.status` is moved by `apply_user_sanction()` and nowhere else**
   (0034). It writes the `user_sanctions` row, the status change and the audit
   row in one transaction, refuses a target who is an active console member, and
@@ -1193,11 +1221,49 @@ mark_email_sent() · mark_email_failed()
   ever dropped quietly — spec §15's failure mode is users never hearing from
   you, and a queue that swallows everything is that failure mode with extra
   steps.
-- **Bounces and complaints are not wired.** SES reports them asynchronously to
-  an SNS topic nothing here subscribes to, which is why `email_status` has
-  `bounced` and `complained` values nothing sets and why
-  `provider_message_id` is recorded on every sent row. A 5% bounce rate gets an
-  account suspended, so this is the next thing to build in the module.
+- **A bounce is heard on a public endpoint, so the topic ARN is the check that
+  matters.** The SNS signature proves *Amazon* sent the message and nothing
+  more: the signing certificate is a public SNS certificate, so anyone with an
+  AWS account can create a topic, point it at `/api/webhooks/ses` and publish
+  perfectly signed messages saying every address we hold has complained.
+  `SES_SNS_TOPIC_ARN` is what says the topic is ours, which is why it is
+  required rather than optional and why the route 503s while it is unset — the
+  same shape as `RAZORPAY_WEBHOOK_SECRET`. Suppression is not something its
+  victim can appeal, because they simply stop hearing from us.
+- **The certificate URL is checked before the certificate is fetched**, and by a
+  function separate from the fetch. An attacker who chooses that URL serves a
+  certificate matching a signature they made, so the check is the boundary and
+  the fetch is not. It lived inside the fetcher first, and the test that injects
+  a loader is what proved that a boundary reachable only through one code path
+  is a boundary that disappears when someone adds a second.
+- **A suppressed recipient still gets a row and still gets the notification.**
+  `enqueue_email()` writes it `cancelled` — the fourth value `email_status` has
+  had since 0017 with nothing to set it — carrying the reason. Three things fall
+  out of that which a bare `return null` would have cost: the dedupe key is
+  still consumed, the in-site notification is still written (the email channel
+  failed, not the event), and `email_outbox` still answers "what would we have
+  sent this person", which is the first question asked when somebody says they
+  hear nothing from us.
+- **Permanent suppresses, transient counts.** A hard bounce is an address that
+  does not exist and a complaint is a person who asked us to stop; both are
+  immediate and neither is a judgement call. A transient bounce is a full
+  mailbox that SES has already retried for hours, so those accumulate —
+  `email.transient_bounce_limit` inside `email.transient_bounce_window_days`.
+  `Undetermined` counts with them, because the honest reading of "we could not
+  tell" is "not yet proven permanent". A missing `bounceType` is parsed as
+  `Undetermined` and never as `Permanent`, which `feedback.test.ts` pins.
+- **Both SES payload shapes are parsed**, because either can be configured:
+  identity notifications discriminate on `notificationType`, configuration-set
+  event destinations on `eventType`. Reading only one presents as "bounces are
+  not arriving" rather than as a parser bug. Events are only published for sends
+  attributed to a configuration set, so `SES_CONFIGURATION_SET` is what makes
+  the topic anything but silent.
+- **`release_email_suppression()` ships with the suppression**, for the reason
+  `cancel_payout_batch()` ships with the payout builder: a state with no way out
+  is a trap, and this one traps a person. It has no console screen yet — it is
+  called from the SQL editor, with an audit row either way — and it clears the
+  suppression without clearing the events, because a release means "send here
+  again", not "that never happened".
 - **0037's four functions were added to `src/types/database.types.ts` by hand**,
   so the build typechecks before the migration has been pushed. Run
   `npx supabase db push`, then `db lint --linked`, then regenerate the types

@@ -246,4 +246,23 @@ export const serverEnv = {
   get sesFromAddress() {
     return required("SES_FROM_ADDRESS", process.env.SES_FROM_ADDRESS);
   },
+  /**
+   * The SNS topic SES publishes bounces and complaints to, in full.
+   *
+   * Required rather than optional, and read by `/api/webhooks/ses`, which
+   * refuses every delivery while it is unset. The reason is the same one
+   * `RAZORPAY_WEBHOOK_SECRET` exists for, arrived at from a different direction:
+   * an SNS message's signature proves Amazon sent it, but the signing
+   * certificate is a *public* SNS certificate, so anybody with an AWS account
+   * can create a topic, point it at this endpoint and publish perfectly signed
+   * messages saying every address we hold has complained. The topic ARN is the
+   * only thing that says the message is ours.
+   *
+   * Suppressing an address is not reversible by the person it happens to — they
+   * simply stop hearing from the platform — so an endpoint that cannot tell our
+   * topic from a stranger's is one that must not run.
+   */
+  get sesSnsTopicArn() {
+    return required("SES_SNS_TOPIC_ARN", process.env.SES_SNS_TOPIC_ARN);
+  },
 };

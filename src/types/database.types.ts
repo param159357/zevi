@@ -1186,6 +1186,56 @@ export type Database = {
           },
         ]
       }
+      email_events: {
+        Row: {
+          created_at: string
+          diagnostic: string | null
+          event_type: Database["public"]["Enums"]["email_event_type"]
+          id: string
+          occurred_at: string
+          outbox_id: string | null
+          payload: Json
+          provider_message_id: string
+          recipient: string
+          sns_message_id: string
+          subtype: string | null
+        }
+        Insert: {
+          created_at?: string
+          diagnostic?: string | null
+          event_type: Database["public"]["Enums"]["email_event_type"]
+          id?: string
+          occurred_at?: string
+          outbox_id?: string | null
+          payload?: Json
+          provider_message_id: string
+          recipient: string
+          sns_message_id: string
+          subtype?: string | null
+        }
+        Update: {
+          created_at?: string
+          diagnostic?: string | null
+          event_type?: Database["public"]["Enums"]["email_event_type"]
+          id?: string
+          occurred_at?: string
+          outbox_id?: string | null
+          payload?: Json
+          provider_message_id?: string
+          recipient?: string
+          sns_message_id?: string
+          subtype?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_events_outbox_id_fkey"
+            columns: ["outbox_id"]
+            isOneToOne: false
+            referencedRelation: "email_outbox"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       email_outbox: {
         Row: {
           attempts: number
@@ -1252,6 +1302,66 @@ export type Database = {
           {
             foreignKeyName: "email_outbox_profile_id_fkey"
             columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      email_suppressions: {
+        Row: {
+          created_at: string
+          detail: string | null
+          email: string
+          event_count: number
+          id: string
+          profile_id: string | null
+          reason: Database["public"]["Enums"]["email_suppression_reason"]
+          release_reason: string | null
+          released_at: string | null
+          released_by: string | null
+          suppressed_at: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          detail?: string | null
+          email: string
+          event_count?: number
+          id?: string
+          profile_id?: string | null
+          reason: Database["public"]["Enums"]["email_suppression_reason"]
+          release_reason?: string | null
+          released_at?: string | null
+          released_by?: string | null
+          suppressed_at?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          detail?: string | null
+          email?: string
+          event_count?: number
+          id?: string
+          profile_id?: string | null
+          reason?: Database["public"]["Enums"]["email_suppression_reason"]
+          release_reason?: string | null
+          released_at?: string | null
+          released_by?: string | null
+          suppressed_at?: string
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "email_suppressions_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "email_suppressions_released_by_fkey"
+            columns: ["released_by"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -5313,6 +5423,23 @@ export type Database = {
           status: string
         }[]
       }
+      record_email_feedback: {
+        Args: {
+          p_diagnostic?: string
+          p_event_type: Database["public"]["Enums"]["email_event_type"]
+          p_occurred_at?: string
+          p_payload?: Json
+          p_provider_message_id: string
+          p_recipient: string
+          p_sns_message_id: string
+          p_subtype?: string
+        }
+        Returns: {
+          email_outbox_id: string
+          outcome: string
+          suppressed: boolean
+        }[]
+      }
       record_worker_kyc_destination: {
         Args: {
           p_account_last4?: string
@@ -5328,6 +5455,18 @@ export type Database = {
           p_worker_id: string
         }
         Returns: string
+      }
+      release_email_suppression: {
+        Args: {
+          p_admin_id: string
+          p_email: string
+          p_ip?: unknown
+          p_reason: string
+        }
+        Returns: {
+          detail: string
+          status: string
+        }[]
       }
       release_matured_earning_holds: { Args: never; Returns: number }
       request_job_cancellation: {
@@ -5713,6 +5852,12 @@ export type Database = {
         | "paid"
         | "reversed"
         | "forfeited"
+      email_event_type:
+        | "bounce"
+        | "complaint"
+        | "delivery"
+        | "delivery_delay"
+        | "reject"
       email_status:
         | "queued"
         | "sending"
@@ -5721,6 +5866,11 @@ export type Database = {
         | "bounced"
         | "complained"
         | "cancelled"
+      email_suppression_reason:
+        | "hard_bounce"
+        | "complaint"
+        | "repeated_soft_bounce"
+        | "manual"
       escrow_status: "held" | "frozen" | "released" | "refunded" | "split"
       file_purpose:
         | "job_attachment"
@@ -6199,6 +6349,13 @@ export const Constants = {
         "reversed",
         "forfeited",
       ],
+      email_event_type: [
+        "bounce",
+        "complaint",
+        "delivery",
+        "delivery_delay",
+        "reject",
+      ],
       email_status: [
         "queued",
         "sending",
@@ -6207,6 +6364,12 @@ export const Constants = {
         "bounced",
         "complained",
         "cancelled",
+      ],
+      email_suppression_reason: [
+        "hard_bounce",
+        "complaint",
+        "repeated_soft_bounce",
+        "manual",
       ],
       escrow_status: ["held", "frozen", "released", "refunded", "split"],
       file_purpose: [

@@ -22,11 +22,15 @@
  *
  * A bounce is neither: SES accepts the message, returns a `MessageId`, and the
  * recipient's server rejects it minutes later. Those arrive asynchronously on an
- * SNS topic, and **nothing here subscribes to one yet** — which is why
- * `email_status` has `bounced` and `complained` values nothing sets, and why the
- * message id is recorded on every sent row against the day something does. It is
- * the next thing to build in this module rather than an optional extra: SES
- * suspends an account over a 5% bounce rate. See `docs/email-setup.md`.
+ * SNS topic, which `app/api/webhooks/ses` subscribes to — and the `MessageId`
+ * returned below is the only handle that ties one back to a row, which is why it
+ * is recorded on every sent row and why a 200 without one is treated as
+ * impossible. `lib/email/feedback.ts` is what happens next.
+ *
+ * That path only carries events for messages sent through a *configuration set*,
+ * so `SES_CONFIGURATION_SET` is what makes a send attributable and therefore
+ * reportable. Without it the topic is configured and silent. See
+ * `docs/email-setup.md`.
  */
 
 import { serverEnv } from "@/lib/env";
