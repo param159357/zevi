@@ -35,7 +35,13 @@ describe("the registry", () => {
     // message and `worker assigned` is the same instant as `payment received`.
     // Both are argued in `templates/client.ts`; this is the count in one place
     // so a future addition is a deliberate change to a number.
-    expect(templateIds).toHaveLength(13);
+    const spec15 = templateIds.filter((id) => id !== "password_changed");
+    expect(spec15).toHaveLength(13);
+
+    // Plus the one email that is not a receipt. Counted separately rather than
+    // folded into 14, so the spec's number stays legible and the exception has
+    // to be named to be added to — see `templates/account.ts`.
+    expect(templateIds).toHaveLength(14);
   });
 });
 

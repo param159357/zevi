@@ -1,0 +1,35 @@
+-- ============================================================================
+-- Zevi 0040 — telling somebody their password changed
+--
+-- One enum value, and no table, function or policy. It is a migration at all
+-- because `notifications.type` is `public.notification_type` and every template
+-- declares the in-site notification it writes alongside its email (0017's rule:
+-- the notification is written by the code that sends the mail, so adding the
+-- write later means revisiting every call site). There was no value for this
+-- event, because until now this platform had no way to change a password.
+--
+-- ### Why this email exists when spec §15 does not ask for it
+--
+-- §15's list is "essential events only", and every bullet on it is about a job
+-- or about money — the things a user is waiting to hear. This one is different
+-- in kind: it is the only message on the platform whose value is entirely in
+-- the case where the recipient did *not* do the thing it describes. A password
+-- reset needs nothing but the inbox, so an attacker holding the inbox holds the
+-- account; this mail is what makes that visible to the person who owns it while
+-- there is still something to be done about it. Reading §15 as a prohibition
+-- would mean the one security notice on the platform is missing because it is
+-- not a receipt.
+--
+-- It carries no job reference for the same reason it is neither a client email
+-- nor a worker email: it is about the account, which is one `profiles` row
+-- whichever side of a job that person is on.
+--
+-- ### Adding a value to an enum in use
+--
+-- Additive and non-blocking: no table is rewritten and no existing row changes.
+-- Postgres refuses to *use* a new enum value in the transaction that adds it,
+-- which is why nothing below writes one — the first row carrying it is written
+-- by application code, long after this has committed.
+-- ============================================================================
+
+alter type public.notification_type add value if not exists 'password_changed';

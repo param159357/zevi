@@ -47,7 +47,10 @@ export type EmailTemplateId =
   | "application_approved"
   | "application_rejected"
   | "payout_sent"
-  | "penalty_notice";
+  | "penalty_notice"
+  // Neither side — the account itself. Not a spec §15 bullet; argued in
+  // `templates/account.ts`.
+  | "password_changed";
 
 export type FieldKind = "text" | "text?" | "int" | "int?" | "url" | "bool";
 

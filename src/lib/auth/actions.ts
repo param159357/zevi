@@ -31,6 +31,7 @@ import {
   PENDING_EMAIL_COOKIE_MAX_AGE,
 } from "@/lib/constants/auth";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
+import { notifyPasswordChanged } from "@/lib/email/events";
 import { getSiteUrl } from "@/lib/env";
 import { SmsNotConfiguredError, sendVerificationSms } from "@/lib/sms/send";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
@@ -405,6 +406,15 @@ export async function setNewPassword(
     // failing the action now would tell the user something untrue.
     console.error(`[auth] could not sign other sessions out: ${signOutError.message}`);
   }
+
+  // Queued before the blocked check below, and before any redirect: a suspended
+  // account whose password was changed is still an account whose owner should
+  // hear about it, and the notice is worth nothing if it only goes out on the
+  // paths that end well. `notifyPasswordChanged` cannot throw.
+  await notifyPasswordChanged({
+    profileId: data.user.id,
+    changedAtIso: data.user.updated_at ?? new Date().toISOString(),
+  });
 
   const profile = await loadProfile(supabase, data.user.id);
 

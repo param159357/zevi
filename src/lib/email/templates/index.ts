@@ -6,10 +6,16 @@
  * the drain uses `renderTemplate` at send time, where the id is a string that
  * came out of a `text` column and everything has to be re-established.
  *
- * The count is thirteen for fifteen bullets in the spec: **verify email** is
- * Supabase Auth's message rather than one we compose, and **worker assigned** is
- * the same instant as **payment received**. Both are explained at the top of
- * `client.ts`, and both are decisions to be argued with rather than gaps.
+ * Thirteen of the fourteen are spec §15's, and its fifteen bullets come to
+ * thirteen templates: **verify email** is Supabase Auth's message rather than
+ * one we compose, and **worker assigned** is the same instant as **payment
+ * received**. Both are explained at the top of `client.ts`, and both are
+ * decisions to be argued with rather than gaps.
+ *
+ * The fourteenth is `password_changed`, which §15 does not list because §15
+ * lists receipts and that one is a security notice — the only email here whose
+ * value is in the case where the recipient did not do the thing it describes.
+ * Argued at the top of `account.ts`.
  */
 
 import { renderEmail, type RenderedEmail } from "@/lib/email/render";
@@ -30,6 +36,7 @@ import {
   revisionRequested,
   workerSelected,
 } from "@/lib/email/templates/worker";
+import { passwordChanged } from "@/lib/email/templates/account";
 import {
   type EmailDocument,
 } from "@/lib/email/document";
@@ -55,6 +62,8 @@ export const EMAIL_TEMPLATES = {
   application_rejected: applicationRejected,
   payout_sent: payoutSent,
   penalty_notice: penaltyNotice,
+  // Account
+  password_changed: passwordChanged,
 } as const;
 
 /**

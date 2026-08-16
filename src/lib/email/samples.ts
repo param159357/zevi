@@ -137,4 +137,10 @@ export const EMAIL_SAMPLES: { [Id in EmailTemplateId]: EmailPayload<Id> } = {
     amountPaise: null,
     url: `${SITE}/worker/earnings`,
   },
+
+  // The one sample with no job in it, because this email has no job in it.
+  password_changed: {
+    whenLabel: "Sat, 22 Aug at 9:14 pm IST",
+    url: `${SITE}/forgot-password`,
+  },
 };

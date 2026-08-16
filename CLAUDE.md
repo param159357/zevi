@@ -244,7 +244,8 @@ src/
 │   ├── disputes/        raising and answering one: actions · queries · validation · types
 │   ├── kyc/             identity before the first payout: actions · queries · razorpay · names · hash · validation · types
 │   ├── email/           spec §15: sigv4 · ses · send (the seam) · document ·
-│   │                    render · template · templates/ (the thirteen) ·
+│   │                    render · template · templates/ (spec §15's thirteen,
+│   │                    plus account.ts's security notice) ·
 │   │                    samples · outbox (queue + drain) · events (the call
 │   │                    sites) · links · sns (the envelope a bounce arrives
 │   │                    in) · feedback (what SES says happened afterwards)
@@ -323,7 +324,7 @@ Rules:
 
 ### Schema
 
-39 migrations, 83 tables, RLS on every one. What to know before writing a query:
+40 migrations, 83 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -493,10 +494,11 @@ verify_email → verify_mobile → choose_role → complete
 - Guards in layouts, not just middleware. `requireRole()` re-checks server-side;
   middleware only spares signed-out visitors a wasted render.
 
-**Password reset is Supabase Auth's message too**, for the reason the
-confirmation link is: the token is GoTrue's to mint, so there is no fourteenth
-outbox template and `docs/email-setup.md` §8 is how it gets our SPF and DKIM. One
-flow serves both sides — the account is one `profiles` row either way, and where
+**The reset link is Supabase Auth's message**, for the reason the confirmation
+link is: the token is GoTrue's to mint, so it is not an outbox template and
+`docs/email-setup.md` §8 is how it gets our SPF and DKIM. What *is* ours is the
+notice afterwards — `password_changed`, the fourteenth template (0040). One flow
+serves both sides: the account is one `profiles` row either way, and where
 someone lands afterwards is `destinationFor()`'s decision, not the screen's.
 
 - **A recovery session is an ordinary session, and that is the whole problem.**
@@ -526,6 +528,24 @@ someone lands afterwards is `destinationFor()`'s decision, not the screen's.
   change-password screen inside the product, and an inbox round trip is the right
   proof for a password change anyway — so this doubles as that path until one
   exists.
+- **The `password_changed` notice is the one email that is not a receipt**, and
+  the reason it is worth a fourteenth template when spec §15 does not list it.
+  Every §15 bullet tells somebody about something they were waiting for; this one
+  is only valuable when the reader did *not* do what it describes. A reset needs
+  the inbox and nothing else, so whoever holds the inbox holds the account, and
+  the owner noticing is the only thing between a quiet mailbox compromise and a
+  quiet Zevi one. Its action is `/forgot-password`, not support: resetting again
+  is what actually ends somebody else's access, and support is a conversation
+  that starts tomorrow.
+- **Its dedupe key carries GoTrue's `updated_at`**, so a second reset sends a
+  second notice. A fixed key would go quiet after the first — which is precisely
+  the sequence a compromised account produces. It deliberately queues *before*
+  the blocked-account check, because a suspended account whose password changed
+  still has an owner who should hear about it.
+- No IP address and no device in it. Both are cheap — `clientIpAddress()` already
+  exists — and neither is actionable: a mobile CGNAT address names a city on a
+  good day, and a line that looks like evidence and is not makes a real
+  compromise easier to dismiss.
 
 One thing still missing, deliberately: **no SMS provider** (development prints
 the code to the console, production refuses to send).

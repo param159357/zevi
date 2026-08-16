@@ -5968,6 +5968,7 @@ export type Database = {
         | "message_received"
         | "job_expiring"
         | "support_reply"
+        | "password_changed"
       opt_in_status:
         | "active"
         | "shortlisted"
@@ -6475,6 +6476,7 @@ export const Constants = {
         "message_received",
         "job_expiring",
         "support_reply",
+        "password_changed",
       ],
       opt_in_status: [
         "active",

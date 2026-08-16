@@ -31,6 +31,7 @@
  * webhook both settle, in either order, and both queue this.
  */
 
+import { AUTH_ROUTES } from "@/lib/constants/auth";
 import { autoAcceptWindowLabel } from "@/lib/constants/deliveries";
 import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { DISPUTE_ROUTES } from "@/lib/constants/disputes";
@@ -464,6 +465,43 @@ export async function notifyRefundIssued(input: {
         amountPaise: input.amountPaise,
         reason: refundReasonLabel(input.reason),
         url: absoluteUrl(JOB_ROUTES.review(input.jobId)),
+      },
+    });
+  });
+}
+
+/**
+ * The password on an account changed. Queued by `setNewPassword()`, after the
+ * change has actually gone through.
+ *
+ * The only event here that is not about a job, so it takes a profile id rather
+ * than one — and the only one whose point is the recipient saying "that wasn't
+ * me". Everything else in this file tells somebody about something they were
+ * waiting for; this tells them about something they may need to undo, which is
+ * why the action is the reset screen rather than a dashboard.
+ *
+ * `changedAtIso` comes from the timestamp GoTrue recorded, not from a clock read
+ * here, so the moment in the email is the moment in the auth record and the
+ * dedupe key is stable if this is ever retried. A later reset is a different
+ * instant and therefore a different key — this is an event that is *supposed*
+ * to repeat, and a fixed key would silence every notice after the first, which
+ * is exactly the sequence a compromised account produces.
+ */
+export async function notifyPasswordChanged(input: {
+  profileId: string;
+  changedAtIso: string;
+}): Promise<void> {
+  await notify(`password changed ${input.profileId}`, async () => {
+    await queueEmail({
+      template: "password_changed",
+      profileId: input.profileId,
+      dedupeKey: `password-changed:${input.profileId}:${input.changedAtIso}`,
+      payload: {
+        // Named in full and with the zone: "was that me?" is a question about a
+        // wall clock, and this is the one email where getting it wrong means
+        // dismissing a real compromise.
+        whenLabel: `${formatWhen(input.changedAtIso)} IST`,
+        url: absoluteUrl(AUTH_ROUTES.forgotPassword),
       },
     });
   });
