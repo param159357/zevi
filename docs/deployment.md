@@ -12,26 +12,30 @@ person does not have to re-derive them.
 
 ## Read this before announcing the URL
 
-**No user can finish signing up on a production deployment today.** This does
-not stop the deploy and it is not a misconfiguration — it is the state of the
-code.
+**Signup needs DLT registration, and DLT takes three to seven working days.**
+This does not stop the deploy, and it is no longer a gap in the code — the
+provider is wired. It is a lead time.
 
 Spec §5 and §6 both make mobile verification compulsory, and `resolveStep()`
 returns `verify_mobile` until `profiles.mobile_verified_at` is set.
-`verify_phone_otp()` is the only writer of that column, it needs an OTP the user
-received, and `lib/sms/send.ts` has no provider: `isSmsConfigured()` returns
-`false` unconditionally, so `deliver()` **throws** `SmsNotConfiguredError` when
-`NODE_ENV === "production"`. In development it prints the code to the server
-console, which is why the flow appears to work locally.
+`verify_phone_otp()` is the only writer of that column and it needs an OTP the
+user received. MSG91 sends it (`lib/sms/msg91.ts`), but India's DLT regime will
+not carry a commercial SMS until the business entity, the six-character sender
+header and the exact message text are each registered and approved with the
+operators. Until `MSG91_AUTH_KEY`, `MSG91_SENDER_ID` and `MSG91_OTP_TEMPLATE_ID`
+are set, `isSmsConfigured()` is false and `sendVerificationSms()` **throws**
+`SmsNotConfiguredError` when `NODE_ENV === "production"`. In development it
+prints the code to the server console, which is why the flow works locally
+without any of this.
 
-The behaviour is deliberate — the module says a signup that silently strands
-every user at the mobile step is worse than one that fails loudly — but the
-consequence is that the deployed site is a staging environment until an SMS
-provider is wired, no matter how correct everything else in this runbook is.
+That behaviour is deliberate — a signup that silently strands every user at the
+mobile step is worse than one that fails loudly — but the consequence is that the
+deployed site is a staging environment until DLT approval lands, no matter how
+correct everything else in this runbook is.
 
-So: deploy, verify, and use it as staging. Wire SMS before you send anyone the
-link. Everything below is still worth doing now, because all of it is
-prerequisite to the day SMS lands.
+So: **start [sms-setup.md](sms-setup.md) before you start this file**, since it
+is the only step here measured in days rather than minutes. Then deploy, verify,
+and use it as staging until the header and template are approved.
 
 ---
 
@@ -146,6 +150,9 @@ Vercel → Project → Settings → Environment Variables. Scope them to
 | `SES_REPLY_TO_ADDRESS` | Optional |
 | `SES_CONFIGURATION_SET` | From `node scripts/ses-domain.ts notifications …` |
 | `SES_SNS_TOPIC_ARN` | The SNS topic. `/api/webhooks/ses` 503s while unset |
+| `MSG91_AUTH_KEY` | MSG91 → Settings → API Keys. Full account access — treat it like the Razorpay secret |
+| `MSG91_SENDER_ID` | The DLT-approved transactional header, e.g. `ZEVIIN`. See [sms-setup.md](sms-setup.md) §2 |
+| `MSG91_OTP_TEMPLATE_ID` | MSG91 → Templates, once DLT has approved the text. [sms-setup.md](sms-setup.md) §4 |
 
 `SES_*` and not `AWS_*` on purpose: a Vercel function runs on Lambda, whose
 runtime sets `AWS_REGION` and both `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
@@ -337,8 +344,9 @@ if you expect them to work.
 - **Money cannot reach a worker.** The payout batch assembles and stops. There
   is no disbursement step, so `payouts` rows never become bank transfers. This
   is the single largest gap in the platform, deployed or not.
-- **No SMS provider**, which is the one item on this list that blocks real use.
-  See the callout at the top of this file.
+- **SMS is wired but needs DLT approval**, which is the one item on this list
+  with a lead time rather than a code gap. See the callout at the top of this
+  file and [sms-setup.md](sms-setup.md).
 - **Sentry is unwired.** `SENTRY_DSN` is listed in `.env.example` and read by
   nothing. Vercel's own function logs are the only error surface.
 - **Uploads are in Supabase Storage, not R2.** Works; watch the storage quota

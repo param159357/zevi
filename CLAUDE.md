@@ -75,13 +75,23 @@ soft bounce in a week. That is the value `email_status` has had since 0017 with
 nothing to set it, and it is what keeps a hundred dead addresses from costing the
 account Amazon measures across all of it.
 
+And the compulsory half of signup can now finish. Mobile verification has been
+the one gap that stopped anybody using a production deployment at all — spec §5
+and §6 both require it and `resolveStep()` will not move past it — and the OTP
+had no way to reach a handset. MSG91 is that way: the Flow API over `fetch`, one
+POST, behind the seam `lib/sms/send.ts` has held since the beginning. What the
+code sends is a template id and two variables, because India's DLT regime
+registers the wording with the operators before anything goes out, so the message
+text is not ours to compose at send time and is deliberately nowhere in this
+repository.
+
 Nothing beyond that: no chat, no ratings — and **money still cannot reach a
 worker**. The payout batch assembles and stops: the disbursement step that turns
 a `payouts` row into a bank transfer, writes `payout_paid` to the ledger and
 handles a failure is not built. That is now the single thing standing between
 this and a worker holding the money, and with refunds wired it is the last money
-path that ends in a row rather than a transfer. Sentry and SMS are unwired, and
-uploads sit in Supabase Storage until R2 replaces it.
+path that ends in a row rather than a transfer. Sentry is unwired, and uploads
+sit in Supabase Storage until R2 replaces it.
 
 ---
 
@@ -94,8 +104,8 @@ npm run start    # serve the production build
 npm run lint     # eslint
 npm test         # vitest — commission, payment signatures, payout calendar, KYC
                  # names, cancellation tiers, SigV4 vectors, email templates,
-                 # the gateway cost a refund absorbs, the SNS signature check
-                 # and the SES feedback parser
+                 # the gateway cost a refund absorbs, the SNS signature check,
+                 # the SES feedback parser and MSG91's 200-means-error envelope
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -203,6 +213,7 @@ than the generator — write them the generator's way.
 | Watermarks | `sharp` (raster) · `pdf-lib` (PDF) | delivery previews, generated server-side |
 | Payments | Razorpay | charge, escrow and refunds wired; Route transfers need KYC |
 | Email | Amazon SES | SESv2 over `fetch`, signed by hand — no SDK |
+| SMS | MSG91 | Flow API over `fetch`; the message text lives on DLT, not here |
 | Errors | Sentry | not wired up |
 | Hosting | Vercel + Cloudflare | |
 
@@ -257,7 +268,7 @@ src/
 │   │                    sites) · links · sns (the envelope a bounce arrives
 │   │                    in) · feedback (what SES says happened afterwards)
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
-│   ├── sms/             OTP delivery seam — no provider wired yet
+│   ├── sms/             the mobile OTP: msg91 (the provider) · send (the seam)
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
 │   ├── utils/           pure helpers only
 │   └── env.ts           validated environment access
@@ -265,7 +276,8 @@ src/
 ├── types/               database.types.ts (generated) + shared domain types
 └── middleware.ts        session refresh + signed-in-only redirects
 
-docs/                    runbooks — email-setup.md (SPF, DKIM, the sandbox)
+docs/                    runbooks — email-setup.md (SPF, DKIM, the sandbox) ·
+                         sms-setup.md (DLT: the entity, the header, the template)
 scripts/                 ops scripts, run by node directly: ses-domain.ts
 
 supabase/
@@ -554,11 +566,12 @@ someone lands afterwards is `destinationFor()`'s decision, not the screen's.
   good day, and a line that looks like evidence and is not makes a real
   compromise easier to dismiss.
 
-One thing still missing, deliberately: **no SMS provider** (development prints
-the code to the console, production refuses to send).
+The OTP now reaches a handset — MSG91, and its own section below. Development
+still prints the code to the console when MSG91 is unconfigured, which is what
+makes a local signup walkable without a DLT registration.
 
-The project has no custom SMTP either, so Supabase's built-in sender applies its
-own low hourly limit — fine for development, not for launch.
+The project has no custom SMTP, so Supabase's built-in sender applies its own low
+hourly limit — fine for development, not for launch.
 
 ---
 
@@ -1336,6 +1349,74 @@ mark_email_sent() · mark_email_failed()
   that makes SPF *align* rather than merely pass — and prints the records for a
   human to publish. `docs/email-setup.md` is the runbook, including why the
   apex SPF record is the wrong place for `include:amazonses.com`.
+
+---
+
+## SMS
+
+Spec §5 and §6's compulsory mobile step, and the last thing standing between a
+production deployment and a user who can finish signing up.
+
+```
+sendMobileOtp()                 the Server Action, in the user's request path
+   ↓
+request_phone_verification()    the code minted, hashed, cooldown started
+   ↓                            — committed BEFORE anything is sent
+sendVerificationSms()           the seam: dev prints, production sends
+   ↓
+sendFlow()                      MSG91 Flow API, one POST
+```
+
+- **The message text is not in this codebase, and that is TRAI rather than a
+  shortcut.** India's DLT regime registers the entity, the six-character sender
+  header and the exact wording with the operators before anything goes out, so
+  what leaves `lib/sms/` is a `template_id`, a `sender` and two variables. A
+  message whose text does not match its approved template is dropped by the
+  *operator* — accepted by the API, billed, never delivered. A second copy of the
+  words in TypeScript would be a copy that drifts and that nothing sends.
+  `docs/sms-setup.md` carries the text to register.
+- **`VALIDITY` is a variable and not a number in the registered text**, so the
+  minutes the message promises and the minutes `request_phone_verification()`
+  allows cannot come apart — one of those two constants takes two days to change.
+  A template registered with a literal "10 minutes" still works, because MSG91
+  ignores a variable the text has no slot for; it has just stopped tracking
+  `OTP_TTL_SECONDS`.
+- **MSG91 answers a refusal with HTTP 200**, and that is the trap `lib/sms/msg91.ts`
+  exists to close. The envelope is `{"type": "success" | "error", …}` and `type`
+  is the field that decides: an insufficient balance, an archived template and a
+  blacklisted header all arrive as `response.ok`. Code that trusts the status
+  reports every one as a code delivered, and the user waits on a message that was
+  never sent. `msg91.test.ts` pins it.
+- **MSG91's OTP API is deliberately not used.** It generates, stores and verifies
+  the code itself — which is the job `request_phone_verification()` and
+  `verify_phone_otp()` already do, with bcrypt, the resend cooldown, the hourly
+  cap and the attempt cap all inside the database. Using both would put "is this
+  code correct" in two places that can disagree and move a security decision out
+  of the schema that enforces every limit around it. MSG91 is asked to carry a
+  string to a handset and nothing else.
+- **The code is committed before it is sent, so a failed send costs a cooldown.**
+  That order is right — a provider that never answers must not be able to hand
+  out unlimited codes — but it means a user whose SMS fails cannot immediately
+  ask again, so `sendMobileOtp` catches `Msg91Error` and says how long rather
+  than inviting a retry the database will refuse a second later.
+- **There is no outbox and nothing retries.** Unlike email, this is in a user's
+  request path: a code is worth something for ten minutes and somebody is
+  watching the button, so the timeout is 10s rather than SES's 15 and a failure
+  is reported instead of queued. `retryable` still exists on `Msg91Error`,
+  because what it decides here is which sentence the user reads.
+- **`toMsg91Mobile` requires the leading `+` and at least eleven digits.** MSG91
+  wants `919876543210`, and a bare `9876543210` is a subscriber number that lost
+  its country code upstream — MSG91 accepts it and delivers nothing. Nothing in
+  the codebase produces one (`parseMobile` is the only source and always emits
+  `+91…`), so refusing is how that breakage becomes visible instead of silent.
+- **Unconfigured is loud, not silent**, the same rule as SES's: development
+  prints the code and the variables to the server console — the one place a live
+  OTP is ever printed — and production throws `SmsNotConfiguredError`. The
+  production log line carries the number and MSG91's request id and never the
+  code.
+- `isSmsConfigured()` wants all three variables or none, because DLT refuses a
+  message missing any one of them and two out of three is indistinguishable from
+  zero.
 
 ## Money
 

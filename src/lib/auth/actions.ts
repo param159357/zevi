@@ -33,6 +33,7 @@ import {
 import { WORKER_ROUTES } from "@/lib/constants/workers";
 import { notifyPasswordChanged } from "@/lib/email/events";
 import { getSiteUrl } from "@/lib/env";
+import { Msg91Error } from "@/lib/sms/msg91";
 import { SmsNotConfiguredError, sendVerificationSms } from "@/lib/sms/send";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import {
@@ -536,16 +537,35 @@ export async function sendMobileOtp(
       throw new Error(`request_phone_verification returned ${data.status}`);
   }
 
+  // The code is recorded and the cooldown is running by the time we get here —
+  // `request_phone_verification()` commits before anything is sent, because a
+  // provider that never answers must not be able to hand out unlimited codes. So
+  // a failed send is a user who is briefly locked out of asking again, and both
+  // branches below say how long rather than inviting a retry the database will
+  // refuse a second later.
   try {
     await sendVerificationSms(mobile.value, code);
   } catch (cause) {
     if (cause instanceof SmsNotConfiguredError) {
-      console.error("[auth] mobile verification blocked: no SMS provider configured");
+      console.error("[auth] mobile verification blocked: MSG91 is not configured");
       return {
         status: "error",
+        mobile: mobile.value,
         error: "We can't send SMS yet. Hang tight while we finish setting that up.",
       };
     }
+
+    if (cause instanceof Msg91Error) {
+      // Logged whole — MSG91's reason names the template, the header or the
+      // balance, and none of that is a sentence to show someone signing up.
+      console.error(`[auth] MSG91 would not send a verification code: ${cause.message}`);
+      return {
+        status: "error",
+        mobile: mobile.value,
+        error: `We couldn't get that code to your phone. Try again in ${OTP_RESEND_COOLDOWN_SECONDS} seconds.`,
+      };
+    }
+
     throw cause;
   }
 

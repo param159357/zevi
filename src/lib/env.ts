@@ -127,6 +127,28 @@ export function isEmailConfigured(): boolean {
 }
 
 /**
+ * True when MSG91 can actually deliver an OTP.
+ *
+ * All three matter and none is derivable from the others: the auth key
+ * authenticates, the sender id is the DLT-registered header the message goes
+ * out under, and the template id names the DLT-approved body. India's DLT
+ * regime refuses a transactional SMS missing any of them, so two out of three
+ * is indistinguishable from none.
+ *
+ * Read by `lib/sms/send.ts`, which prints the code to the server console in
+ * development and refuses in production. Spec §5 and §6 both make the mobile
+ * step compulsory, so an unconfigured provider strands every signup at it —
+ * which is a thing to say loudly, not to discover from a support ticket.
+ */
+export function isSmsConfigured(): boolean {
+  return Boolean(
+    process.env.MSG91_AUTH_KEY &&
+      process.env.MSG91_SENDER_ID &&
+      process.env.MSG91_OTP_TEMPLATE_ID,
+  );
+}
+
+/**
  * Server-only. Importing this from a Client Component leaks secrets into the
  * browser bundle — don't.
  */
@@ -264,5 +286,39 @@ export const serverEnv = {
    */
   get sesSnsTopicArn() {
     return required("SES_SNS_TOPIC_ARN", process.env.SES_SNS_TOPIC_ARN);
+  },
+
+  /**
+   * The MSG91 auth key. One key, full account access — MSG91 has no per-scope
+   * credential the way SES does, so this is closer to the Razorpay secret than
+   * to `SES_ACCESS_KEY_ID` in blast radius and should be treated that way.
+   */
+  get msg91AuthKey() {
+    return required("MSG91_AUTH_KEY", process.env.MSG91_AUTH_KEY);
+  },
+  /**
+   * The DLT-registered header the message is sent under — six alphanumeric
+   * characters, e.g. `ZEVIIN`, approved on the operator's DLT portal against
+   * our registered entity.
+   *
+   * Not cosmetic and not a display name. TRAI matches the header, the entity
+   * and the template together, and an unregistered one is rejected by the
+   * operator rather than delivered under a different name.
+   */
+  get msg91SenderId() {
+    return required("MSG91_SENDER_ID", process.env.MSG91_SENDER_ID);
+  },
+  /**
+   * The MSG91 template id for the verification code — what MSG91's dashboard
+   * calls a Template ID and its older documentation calls a Flow ID.
+   *
+   * **The message text is not in this codebase**, and that is the DLT regime
+   * rather than a shortcut: the wording is registered with the operators and
+   * approved before a single message goes out, so what we send is a template id
+   * and a set of variables. `docs/sms-setup.md` carries the text to register and
+   * the variable names it must use.
+   */
+  get msg91OtpTemplateId() {
+    return required("MSG91_OTP_TEMPLATE_ID", process.env.MSG91_OTP_TEMPLATE_ID);
   },
 };
