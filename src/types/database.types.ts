@@ -3446,6 +3446,7 @@ export type Database = {
       refunds: {
         Row: {
           amount_paise: number
+          attempts: number
           cancellation_id: string | null
           completed_at: string | null
           created_at: string
@@ -3456,15 +3457,18 @@ export type Database = {
           id: string
           initiated_by: string | null
           job_id: string
+          next_attempt_at: string
           note: string | null
           payment_id: string
           razorpay_refund_id: string | null
           reason: Database["public"]["Enums"]["refund_reason"]
           status: Database["public"]["Enums"]["refund_status"]
+          submitted_at: string | null
           updated_at: string
         }
         Insert: {
           amount_paise: number
+          attempts?: number
           cancellation_id?: string | null
           completed_at?: string | null
           created_at?: string
@@ -3475,15 +3479,18 @@ export type Database = {
           id?: string
           initiated_by?: string | null
           job_id: string
+          next_attempt_at?: string
           note?: string | null
           payment_id: string
           razorpay_refund_id?: string | null
           reason: Database["public"]["Enums"]["refund_reason"]
           status?: Database["public"]["Enums"]["refund_status"]
+          submitted_at?: string | null
           updated_at?: string
         }
         Update: {
           amount_paise?: number
+          attempts?: number
           cancellation_id?: string | null
           completed_at?: string | null
           created_at?: string
@@ -3494,11 +3501,13 @@ export type Database = {
           id?: string
           initiated_by?: string | null
           job_id?: string
+          next_attempt_at?: string
           note?: string | null
           payment_id?: string
           razorpay_refund_id?: string | null
           reason?: Database["public"]["Enums"]["refund_reason"]
           status?: Database["public"]["Enums"]["refund_status"]
+          submitted_at?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -5098,6 +5107,23 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      claim_refund_batch: {
+        Args: { p_limit?: number }
+        Returns: {
+          amount_paise: number
+          attempts: number
+          charged_paise: number
+          gateway_fee_paise: number
+          gateway_tax_paise: number
+          id: string
+          job_id: string
+          note: string
+          payment_id: string
+          razorpay_payment_id: string
+          razorpay_refund_id: string
+          reason: string
+        }[]
+      }
       enqueue_email: {
         Args: {
           p_action_url?: string
@@ -5183,6 +5209,22 @@ export type Database = {
       }
       mark_email_sent: {
         Args: { p_id: string; p_message_id: string }
+        Returns: undefined
+      }
+      mark_refund_completed: {
+        Args: {
+          p_gateway_fee_paise?: number
+          p_id: string
+          p_razorpay_refund_id?: string
+        }
+        Returns: string
+      }
+      mark_refund_failed: {
+        Args: { p_error: string; p_id: string; p_retry_at?: string }
+        Returns: string
+      }
+      mark_refund_submitted: {
+        Args: { p_id: string; p_razorpay_refund_id: string }
         Returns: undefined
       }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }

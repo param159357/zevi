@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { DeliveryAttemptPanel } from "@/components/deliveries/DeliveryAttemptPanel";
 import { ReviewActions } from "@/components/deliveries/ReviewActions";
 import { CancelJobForm } from "@/components/jobs/CancelJobForm";
+import { RefundPanel } from "@/components/jobs/RefundPanel";
 import { Alert } from "@/components/ui/Alert";
 import { requireRole } from "@/lib/auth/session";
 import { loadCancellationPreview } from "@/lib/cancellations/queries";
@@ -14,6 +15,7 @@ import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { loadDeliveryReview } from "@/lib/deliveries/queries";
 import type { DeliveryReview } from "@/lib/deliveries/types";
 import { liveDisputeForJob } from "@/lib/disputes/queries";
+import { loadJobRefunds } from "@/lib/refunds/queries";
 import { createClient } from "@/lib/supabase/server";
 import { formatDate, formatDateShort, formatRemaining } from "@/lib/utils/format";
 import { formatPaiseCompact } from "@/lib/utils/money";
@@ -42,10 +44,11 @@ export default async function ReviewPage({
 
   const { jobId } = await params;
 
-  const [review, cancellation, dispute] = await Promise.all([
+  const [review, cancellation, dispute, refunds] = await Promise.all([
     loadDeliveryReview(supabase, jobId, context.user.id),
     loadCancellationPreview(supabase, jobId, context.user.id),
     liveDisputeForJob(supabase, jobId),
+    loadJobRefunds(supabase, jobId),
   ]);
 
   // Someone else's job never came back from the query at all — RLS decided
@@ -96,6 +99,10 @@ export default async function ReviewPage({
           .
         </Alert>
       ) : null}
+
+      {/* Above the delivery, not below it. On a cancelled or refunded job this
+          is the only thing the client came here to find out. */}
+      <RefundPanel refunds={refunds} />
 
       {open ? (
         <section className="space-y-4">
@@ -219,12 +226,11 @@ function StatusNotice({ review }: { review: DeliveryReview }) {
   }
 
   if (review.status === "cancelled") {
-    return (
-      <Alert>
-        This job was cancelled. Any refund goes back to the card or account you paid with,
-        and takes 5–7 working days.
-      </Alert>
-    );
+    // Deliberately says nothing about the money any more. It used to promise a
+    // refund in the abstract because nothing was actually issuing one; the panel
+    // below now shows the real row, with the amount and where it has got to, and
+    // two statements about the same refund is how they come to disagree.
+    return <Alert>This job was cancelled.</Alert>;
   }
 
   return <Alert>Nothing has been delivered on this job yet.</Alert>;

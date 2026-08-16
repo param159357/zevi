@@ -3,7 +3,7 @@
 Working notes for Zevi. Read [SPEC.md](SPEC.md) for what the product is and why;
 this file covers how the code is built.
 
-**Status: a job runs end to end, and a verified worker can now be paid.**
+**Status: a job runs end to end, and money can now go back to a client.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
 verified through Supabase, mobile through our own OTP. A client can post a job:
@@ -54,16 +54,23 @@ thirteen templates covering spec §15's essential events, queued by the actions
 that already existed, drained by a cron, with the SPF and DKIM setup that spec
 §15 insists on from day one scripted and written down.
 
-Nothing beyond that: no chat, no ratings — and **money still cannot leave the
-platform account**. The batch assembles and stops: the disbursement step that
-turns a `payouts` row into a bank transfer, writes `payout_paid` to the ledger
-and handles a failure is not built. That is still the single thing standing
-between this and a worker holding the money, and it is equally what stands
-between a decided dispute or a cancellation and the client's refund: both move
-the worker's share through the ledger and leave the client's as a `pending`
-refund row, because Razorpay's refund API is unwired too. Sentry and SMS are
-unwired, SES cannot yet hear about a bounce, and uploads sit in Supabase Storage
-until R2 replaces it.
+And money can now actually leave the platform account, in one direction. Every
+path that ends with a client owed something — a cancellation inside spec §5's
+tiers, a dispute refunded or split — has been writing a `pending` `refunds` row
+and stopping there. Migration 0038 is the rest of that sentence: a queue drained
+by a cron that submits the refund to Razorpay, polls it while the acquirer
+thinks, and on confirmation credits escrow, debits external and closes the row.
+Neither caller needed a change — they were already writing the instruction, and
+this is the reader arriving.
+
+Nothing beyond that: no chat, no ratings — and **money still cannot reach a
+worker**. The payout batch assembles and stops: the disbursement step that turns
+a `payouts` row into a bank transfer, writes `payout_paid` to the ledger and
+handles a failure is not built. That is now the single thing standing between
+this and a worker holding the money, and with refunds wired it is the last money
+path that ends in a row rather than a transfer. Sentry and SMS are unwired, SES
+cannot yet hear about a bounce, and uploads sit in Supabase Storage until R2
+replaces it.
 
 ---
 
@@ -75,7 +82,8 @@ npm run build    # production build
 npm run start    # serve the production build
 npm run lint     # eslint
 npm test         # vitest — commission, payment signatures, payout calendar, KYC
-                 # names, cancellation tiers, SigV4 vectors, email templates
+                 # names, cancellation tiers, SigV4 vectors, email templates,
+                 # the gateway cost a refund absorbs
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -95,6 +103,14 @@ curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/payo
 # so queued mail sits in `email_outbox` until you do. Without SES configured it
 # prints each message to the server console instead of sending it.
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/email
+
+# The refund run — submits pending refunds to Razorpay, polls the submitted
+# ones, and writes the ledger when the money has gone. Every fifteen minutes in
+# production. Unlike the outbox drain it refuses to claim anything when Razorpay
+# is unconfigured (503): an email can be printed to a console, a refund cannot,
+# and claiming would spend every row's attempts against a gateway that was never
+# there.
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/refunds
 
 # SES domain setup — the identity, Easy DKIM, the custom MAIL FROM that makes
 # SPF align, and the DNS records to publish. Node runs the TypeScript directly.
@@ -139,6 +155,14 @@ The generator also types an optional argument as `p_actor_id?: string`, never
 `string | null`. To pass "no value", omit the key — `...(actorId ? { p_actor_id:
 actorId } : {})` — and let the function's own `default null` apply.
 
+**And it types every `returns table` column as non-null**, because the function
+signature does not say otherwise — even when the column it selects plainly is
+nullable. `claim_refund_batch` returns `payments.razorpay_payment_id` and the
+generated type says `string`. Guard it anyway: the null is real, only the type
+is wrong. This is also why hand-written entries for a `returns table` function
+will *not* come back byte-identical after regeneration if you were more careful
+than the generator — write them the generator's way.
+
 ---
 
 ## Stack
@@ -152,7 +176,7 @@ actorId } : {})` — and let the function's own `default null` apply.
 | DB + Auth | Supabase (Postgres) | `@supabase/supabase-js`, `@supabase/ssr` |
 | Files | Cloudflare R2 | not wired up |
 | Watermarks | `sharp` (raster) · `pdf-lib` (PDF) | delivery previews, generated server-side |
-| Payments | Razorpay | charge + escrow wired; Route transfers need KYC |
+| Payments | Razorpay | charge, escrow and refunds wired; Route transfers need KYC |
 | Email | Amazon SES | SESv2 over `fetch`, signed by hand — no SDK |
 | Errors | Sentry | not wired up |
 | Hosting | Vercel + Cloudflare | |
@@ -195,6 +219,8 @@ src/
 │   │                    money-and-account actions 0034 added)
 │   ├── money/           commission.ts (the calculator) · rates.ts (lookup)
 │   ├── payments/        Razorpay: actions · settle · razorpay · signature · quote
+│   ├── refunds/         money going back: drain (the queue) · absorption (the
+│   │                    gateway cost spec §14 absorbs) · queries · types
 │   ├── payouts/         the twice-weekly cycle: cycle · eligibility · queries · types
 │   ├── cancellations/   spec §5's tiers: tiers (the calculator) · actions · queries · types
 │   ├── disputes/        raising and answering one: actions · queries · validation · types
@@ -278,7 +304,7 @@ Rules:
 
 ### Schema
 
-37 migrations, 81 tables, RLS on every one. What to know before writing a query:
+38 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -337,9 +363,10 @@ Rules:
   it), which is a flow, not a branch. A full release writes the same four ledger
   legs, for the same amounts off the same frozen `job_financials` row, as
   `accept_job_delivery()` — a release **is** an acceptance, arrived at the slow
-  way. Only the worker's share moves through the ledger; the client's becomes a
-  `pending` refund, so the escrow account's balance stays equal to what the
-  platform actually holds.
+  way. Only the worker's share moves through the ledger *at the decision*; the
+  client's becomes a `pending` refund, so the escrow account's balance stays
+  equal to what the platform actually holds until the drain (0038) confirms the
+  money has gone and credits the rest of escrow out.
 - **A dispute is raised by `open_dispute()` and answered by
   `respond_to_dispute()`** (0036), and 0015's two INSERT policies were dropped
   with the grants for the reason 0030 dropped delivery's three: each write moves
@@ -354,6 +381,16 @@ Rules:
   `disputes.client_refund_cap_bps` = 7000, and `resolve_dispute()` refuses any
   outcome giving the client more. The console form also hides `refund` on a
   capped case — two checks, because a disabled radio button is not a rule.
+- **A `refunds` row is a queue, not a record** (0038). It always was — 0012 gave
+  it a status and a `razorpay_refund_id` — so 0038 added three columns and four
+  functions and no table. `claim_refund_batch()` locks with `skip locked` and
+  counts the attempt **only when there is no `razorpay_refund_id` yet**: before
+  submission an attempt is a thing you can give up on, after it Razorpay holds
+  the instruction and a poll that burned an attempt would fail a healthy refund
+  for taking a day. `mark_refund_completed()` is the only writer of a
+  `refund_issued` ledger transaction, takes no amount, and refuses to credit a
+  job's escrow more than it has left — the arithmetic under the lock, so a
+  double refund cannot balance even if one is somehow issued.
 - **`profiles.status` is moved by `apply_user_sanction()` and nowhere else**
   (0034). It writes the `user_sanctions` row, the status change and the audit
   row in one transaction, refuses a target who is an active console member, and
@@ -649,10 +686,13 @@ confirmJobPayment() verify → fetch → capture → settle
   is — the same position an `on_hold` Route transfer leaves it in, minus the
   linked account. `transferForJob()` in `lib/payments/razorpay.ts` is the seam,
   and it throws.
-- **Escrow release exists now** (0030, below); payouts and refunds still do not.
-  If settlement fails after capture the client is charged and unassigned; the UI
-  says so and refuses to offer a retry, and the log has the payment id. Building
-  refunds is what closes that.
+- **Escrow release exists** (0030) and refunds now do too (0038); payouts still
+  do not. If settlement fails after capture the client is charged and
+  unassigned, and that one case is still unclosed: `fail_job_payment()` writes
+  no `refunds` row, so the drain has nothing to pick up. The UI says so and
+  refuses to offer a retry, and the log has the payment id. Closing it is now a
+  small job — a `refunds` row with reason `admin_adjustment` and the pipeline
+  does the rest — rather than the whole gateway integration it used to be.
 - Without `NEXT_PUBLIC_RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` the shortlist
   disables picking and says why. There is deliberately no assign-without-paying
   path left, in any environment.
@@ -863,17 +903,20 @@ respond_to_dispute()  the other side's 24h    → admin_review
 resolve_dispute()     a person decides
    ·
 release   escrow → worker payable + revenue + tax     the acceptance ledger
-refund    escrow → a `pending` refunds row            nothing moves yet
+refund    escrow → a `pending` refunds row            the drain issues it
 split     both, pro-rated by split_client_bps
 ```
 
-- **Only the worker's share moves through the ledger.** The client's share is
-  still sitting in the platform's gateway account and Razorpay's refund API is
-  not wired, so no entry is written for it. That is the position 0031 leaves a
-  payout in, for the same reason, and it keeps the escrow account's balance equal
-  to what is actually held. `escrow_holds` records the *decision*; the ledger
-  records the *movement*; the two disagreeing is the gap where the gateway call
-  goes, not drift.
+- **Only the worker's share moves through the ledger at the decision.** The
+  client's share is still sitting in the platform's gateway account at that
+  moment, so no entry is written for it here — `escrow_holds` records the
+  *decision*, the ledger records the *movement*, and the two disagreeing is the
+  window the gateway call happens in rather than drift. The refund drain (0038)
+  closes it: when Razorpay confirms the money has gone,
+  `mark_refund_completed()` credits the rest of escrow out and debits
+  `external`, and the job's escrow balance reaches zero. Until that confirmation
+  the escrow account's balance is exactly what the platform actually holds,
+  which is the property this split exists to preserve.
 - **A split pro-rates the worker's commission and GST by the same share as the
   money.** A worker paid 60% of the budget is charged commission on 60% of it,
   both floored, so the remainder lands with the worker and `worker_net` can
@@ -962,11 +1005,13 @@ post_delivery    refused: accept, revise, or dispute
 - **No GST on the fee.** Spec §8 applies 18% "on commission from both sides"; the
   ₹15 is under "Other fees", separately. A tax line nobody asked for would put a
   number in `tax_payable` that no CA can explain.
-- **The fee moves through the ledger and the refund does not.** Escrow → platform
-  revenue for the fee and the worker's share; the client's refund is a `pending`
-  `refunds` row with no entry at all, because nothing has left the gateway
-  account. Same rule as 0034's, for the same unwired API, and it is what keeps
-  the escrow balance equal to what is actually held.
+- **The fee moves through the ledger here and the refund moves later.** Escrow →
+  platform revenue for the fee and the worker's share, written under the job's
+  lock; the client's refund is a `pending` `refunds` row with no entry at all,
+  because at that instant nothing has left the gateway account. The drain (0038)
+  writes the other entry when Razorpay confirms it has. Same rule as 0034's, and
+  it is what keeps the escrow balance equal to what is actually held at every
+  point in between.
 - **Both doors exist and they are on different screens.** An unassigned job lives
   on `/shortlist/[jobId]` and that is where its cancel panel is; once someone is
   picked the job moves to `/review/[jobId]` and the panel goes with it, because
@@ -976,6 +1021,91 @@ post_delivery    refused: accept, revise, or dispute
   worker walking away is spec §6's abandonment, which carries a rating delta, a
   debit and a next-job cap that nothing computes yet. A worker who wants out
   raises a dispute, which is the door spec §11 gives them.
+
+---
+
+## Refunds
+
+Spec §14, and the first direction money moves *out* of the platform account.
+
+```
+request_job_cancellation()  ──┐
+resolve_dispute()           ──┴──→  a `pending` refunds row   (0036, unchanged)
+        ·
+claim_refund_batch()      what the drain works on, locked so two runs cannot
+createRefund()            the submission — or a poll, if one was already sent
+mark_refund_submitted()   Razorpay has it, the acquirer does not yet
+mark_refund_completed()   the money left; escrow credited, external debited
+mark_refund_failed()      it did not, and whether that is worth trying again
+        ·
+/api/cron/refunds         every fifteen minutes
+```
+
+- **Neither caller changed.** They were already writing the instruction under
+  the job's row lock; 0038 is the reader arriving. `next_attempt_at` defaults to
+  `now()`, so every row 0036 had already written became due the moment the
+  migration landed. That is what a queue built before its consumer buys you.
+- **Nothing is issued inline, and the reason is stronger than the outbox's.** A
+  client pressing "cancel" is inside a transaction that divides escrow, writes
+  the ledger, opens the worker's earning and moves their own cancellation rate.
+  A Razorpay round trip before the commit lets a timeout unwind a decision two
+  people have already been told about; after the commit it has nowhere to record
+  a failure. Writing it down and coming back is the only shape with an answer to
+  "what if the gateway is down".
+- **The submission is the dangerous part, and three things stand in front of
+  it.** Razorpay's refund endpoint has **no idempotency key** — a repeated POST
+  is a second refund, and a second refund is money that does not come back. So:
+  `claim_refund_batch()` takes `for update skip locked`; a retry asks Razorpay
+  whether our reference is already on one of that payment's refunds *before*
+  submitting, which covers the case our own rows cannot (accepted, never
+  recorded); and `mark_refund_completed()` refuses to credit escrow more than
+  the job has left in it. A lock, a question, and arithmetic. None is sufficient
+  alone, which is why `createRefund` stamps the `refunds` row id into the notes
+  — that stamp is what makes the question answerable.
+- **Attempts count submissions, not polls.** Before a refund is sent, an attempt
+  is a thing that can be given up on; after it, Razorpay holds the instruction
+  and the only question left is when it finishes. A poll that burned an attempt
+  would mark a healthy refund `failed` for taking a day. `claim_refund_batch()`
+  increments only when `razorpay_refund_id is null`.
+- **Nothing is written to the ledger at submission.** Razorpay accepting an
+  instruction is not money moving, and a ledger that books intentions is one
+  that disagrees with the bank statement the day somebody reconciles them. The
+  entries are two, at confirmation: credit escrow, debit external.
+- **`partially_refunded` is the honest status on nearly every refund here**, and
+  it is not a rounding artefact. The charge is budget + the client's commission
+  + GST; what is in escrow, and therefore what comes back, is the budget.
+  Whether a client who wins gets the commission back is a question spec §8 and
+  §14 do not answer, and 0038 does not answer it either.
+- **The gateway fee is recorded, not moved.** Spec §14 has Zevi absorbing it, and
+  capture already debited `gateway_fees` and credited `platform_revenue` for the
+  whole thing — so `absorbedGatewayCostPaise()` in `lib/refunds/absorption.ts`
+  computes the share attributable to the money returned and 0038 stores it on
+  the row, with no ledger entry following. Pro-rated against what was *charged*,
+  not against the budget, and floored. `absorption.test.ts` works spec §8's ₹149
+  job through it.
+- **An unconfigured gateway claims nothing.** The cron 503s rather than draining,
+  which is the opposite of what the outbox drain does with an unconfigured SES —
+  and the difference is that an email can be printed to a console and a refund
+  cannot. Claiming would spend every row's attempts against a gateway that was
+  never there and leave a queue of `failed` refunds that were never refused.
+- **A rejected refund is terminal, not retried.** Razorpay tried and the acquirer
+  said no — usually a closed card. Retrying posts a *new* refund to the same
+  dead instrument, so the row is failed and a person has to reach the client.
+- **A `failed` refund has no screen yet.** `refunds_failed_idx` makes the pile
+  visible and the cron shouts at error level every run, which is the honest
+  half; a console module for it is the next thing to build here. Note that
+  `escrow_holds.refunded_paise` already records the decision, so a failed refund
+  is a client who was told the money was coming and has not had it — nothing
+  unwinds that, because the decision stands and it is the payment that has to be
+  made to work.
+- **The client is told at submission, not at settlement.** The `refund_issued`
+  template promises 5–7 working days, which is true from the moment Razorpay
+  accepts and stale by the time the acquirer finishes. Deduped on the refund, so
+  the drain can call `notifyRefundIssued` from both branches and one email goes.
+- Not built: the refund *document* spec §14 wants (`refunds.document_id` stays
+  null — nothing on the platform generates a `documents` row yet), and a refund
+  for the settlement-failed-after-capture case, which writes no `refunds` row
+  to pick up.
 
 ---
 
@@ -1027,10 +1157,12 @@ mark_email_sent() · mark_email_failed()
   `docs/email-setup.md`. **Worker assigned** is the same instant as **payment
   received**: 0029 settles the capture, the escrow hold, the ledger and the
   assignment in one transaction, so the second email would arrive in the same
-  second saying less. Three more — `refund_issued`, `payout_sent`,
-  `penalty_notice` — are written and tested with **no caller**, because the
-  money paths behind them are the ones that do not exist yet. They are the
-  copy those steps will not have to invent, not dead code.
+  second saying less. `refund_issued` got its caller when the refund drain
+  landed (0038), which is what that template was written ahead of; two more —
+  `payout_sent` and `penalty_notice` — are still written and tested with **no
+  caller**, because disbursement and adjustments are the money paths that do not
+  exist yet. They are the copy those steps will not have to invent, not dead
+  code, and `refund_issued` is the worked example of that paying off.
 - **The payload is validated on the way back out.** It is written as JSON by one
   deploy and read by another, which makes it an external input by the time the
   drain sees it. Each template declares its fields once and TypeScript infers

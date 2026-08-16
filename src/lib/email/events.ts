@@ -34,6 +34,7 @@
 import { autoAcceptWindowLabel } from "@/lib/constants/deliveries";
 import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { DISPUTE_ROUTES } from "@/lib/constants/disputes";
+import { refundReasonLabel } from "@/lib/constants/refunds";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
 import { absoluteUrl } from "@/lib/email/links";
 import { queueEmail } from "@/lib/email/outbox";
@@ -420,6 +421,51 @@ export async function notifyDisputeUpdate(input: {
         },
       });
     }
+  });
+}
+
+/**
+ * Money going back — spec §14, and the template 0037 wrote with no caller.
+ *
+ * Queued by the refund drain the moment Razorpay accepts the instruction, not
+ * when the transfer settles. The copy promises 5–7 working days, which is a
+ * sentence that is true from acceptance and stale by the time it is finished —
+ * and a client whose job was cancelled at nine in the morning should not be
+ * waiting until the acquirer is done to hear that their money is coming.
+ *
+ * Deduped on the refund rather than on the job, because a job can have two
+ * (0036 writes one per cancellation and one per dispute) and each is its own
+ * piece of news. That is also what makes it safe for the drain to call this
+ * from both the submitted and the completed branch: a refund Razorpay settles
+ * immediately queues one email, not two.
+ *
+ * The reason is spelled out here rather than passed through raw —
+ * `dispute_split` is an enum value, and an enum value in somebody's inbox is a
+ * database column that got out.
+ */
+export async function notifyRefundIssued(input: {
+  refundId: string;
+  jobId: string;
+  amountPaise: number;
+  reason: string;
+}): Promise<void> {
+  await notify(`refund issued ${input.refundId}`, async () => {
+    const context = await loadJobContext(input.jobId);
+    if (!context) return;
+
+    await queueEmail({
+      template: "refund_issued",
+      profileId: context.clientId,
+      jobId: input.jobId,
+      dedupeKey: `refund:${input.refundId}:issued`,
+      payload: {
+        jobRef: context.jobRef,
+        jobTitle: context.title,
+        amountPaise: input.amountPaise,
+        reason: refundReasonLabel(input.reason),
+        url: absoluteUrl(JOB_ROUTES.review(input.jobId)),
+      },
+    });
   });
 }
 

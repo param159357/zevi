@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { StatementForm } from "@/components/disputes/StatementForm";
+import { RefundPanel } from "@/components/jobs/RefundPanel";
 import { Alert } from "@/components/ui/Alert";
 import { requireUser } from "@/lib/auth/session";
 import { DECISION_DAYS, RESPONSE_HOURS } from "@/lib/constants/disputes";
@@ -10,6 +11,7 @@ import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
 import { loadDisputeForParty } from "@/lib/disputes/queries";
 import type { DisputeView } from "@/lib/disputes/types";
+import { loadJobRefunds } from "@/lib/refunds/queries";
 import { createClient } from "@/lib/supabase/server";
 import { formatCountdown, formatDate } from "@/lib/utils/format";
 import { formatBps, formatPaise } from "@/lib/utils/money";
@@ -41,6 +43,15 @@ export default async function DisputeCasePage({
   // a 404 is what it should look like.
   if (!view) notFound();
 
+  // Only the client's, and only once the case has been decided. `participants
+  // read refunds` would hand a worker the same rows, but "your money back" is
+  // not a sentence about them — the worker's half of a decision goes to their
+  // earnings, not to a card.
+  const refunds =
+    view.viewerRole === "client" && view.outcome !== null
+      ? await loadJobRefunds(supabase, view.jobId)
+      : [];
+
   const backHref =
     view.viewerRole === "client" ? JOB_ROUTES.review(view.jobId) : WORKER_ROUTES.deliver(view.jobId);
 
@@ -64,6 +75,8 @@ export default async function DisputeCasePage({
       </div>
 
       <Outcome view={view} />
+
+      <RefundPanel refunds={refunds} />
 
       <section className="space-y-2">
         <h2 className="text-sm font-medium">What it is about</h2>
@@ -164,13 +177,9 @@ function Outcome({ view }: { view: DisputeView }) {
         {view.decidedAt ? ` Decided on ${formatDate(view.decidedAt)}.` : ""}
       </Alert>
 
-      {view.viewerRole === "client" && mine > 0 ? (
-        <Alert>
-          Your refund goes back to the card or account you paid with, and takes 5–7 working
-          days. We cover the payment fee on it.
-        </Alert>
-      ) : null}
-
+      {/* What used to be a promise about a refund in the abstract is now the
+          `RefundPanel` above, reading the real row. Two statements about the
+          same money is how they come to disagree. */}
       {view.decisionNote ? (
         <div className="border-border rounded-lg border p-3">
           <p className="text-muted text-xs">Why</p>

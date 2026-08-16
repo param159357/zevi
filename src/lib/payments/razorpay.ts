@@ -5,11 +5,17 @@
  * `serverEnv`. Importing this from a Client Component puts the secret in the
  * browser bundle — the same rule, and the same reason, as `lib/supabase/server`.
  *
- * Three calls: create an order, read a payment back, capture it. No SDK — the
- * official package is a CommonJS wrapper over the same three REST endpoints and
- * brings its own HTTP stack into a runtime that already has `fetch`. A typed
- * wrapper over the endpoints we actually use is smaller, and it is honest about
- * what the responses contain instead of typing them as `any`.
+ * Money in: create an order, read a payment back, capture it. Money out: create
+ * a refund, read one back, and ask whether one we may already have sent exists.
+ * No SDK — the official package is a CommonJS wrapper over the same REST
+ * endpoints and brings its own HTTP stack into a runtime that already has
+ * `fetch`. A typed wrapper over the endpoints we actually use is smaller, and it
+ * is honest about what the responses contain instead of typing them as `any`.
+ *
+ * Nothing here is a Server Action and nothing here is called from a request a
+ * user is waiting on. The refund half is driven by `lib/refunds/drain.ts` from a
+ * cron, for the same reason the outbox is: a client whose job was cancelled
+ * should wait on our database and not on Razorpay's availability.
  *
  * **Amounts are paise, both ways.** Razorpay's `amount` is the smallest currency
  * unit, which for INR is what this codebase already stores, so nothing is
@@ -252,6 +258,118 @@ export async function capturePayment({
 
     throw error;
   }
+}
+
+/**
+ * A refund, as Razorpay reports it.
+ *
+ * `status` is the whole reason this module has a poll in it. A refund is not
+ * synchronous: `processed` means the money has been sent back, `pending` means
+ * Razorpay has the instruction and the acquirer has not finished with it, and
+ * that second state can last minutes on UPI and rather longer on a card.
+ * `failed` is terminal and rare — usually the acquirer refusing an instrument
+ * that has since been closed.
+ */
+export type RazorpayRefund = {
+  id: string;
+  payment_id: string;
+  amount: number;
+  currency: string;
+  status: "pending" | "processed" | "failed";
+  speed_requested: string | null;
+  speed_processed: string | null;
+  receipt: string | null;
+  notes: Record<string, string>;
+  created_at: number;
+};
+
+/**
+ * The note Razorpay carries back for us, and what makes a retried submission
+ * safe. See `findRefundByReference` below.
+ */
+const REFUND_REFERENCE_NOTE = "zevi_refund_id";
+
+/**
+ * Send money back.
+ *
+ * `speed: "normal"` on purpose. Razorpay's `optimum` uses the instant rails
+ * where the instrument supports them and charges for the privilege; spec §14
+ * promises 5–7 working days and has Zevi absorbing the gateway's cut, so paying
+ * extra to beat a promise nobody made is a cost with no buyer.
+ *
+ * **The notes are load-bearing, not decoration.** Razorpay's refund endpoint has
+ * no idempotency key — unlike capture, a repeated call creates a *second*
+ * refund, which is real money gone. So every submission stamps our `refunds`
+ * row id into the notes, and `findRefundByReference` is what a retry consults
+ * before deciding it has anything to submit.
+ */
+export async function createRefund({
+  paymentId,
+  amountPaise,
+  refundId,
+  notes,
+}: {
+  paymentId: string;
+  amountPaise: number;
+  refundId: string;
+  notes?: Record<string, string>;
+}): Promise<RazorpayRefund> {
+  if (!Number.isSafeInteger(amountPaise) || amountPaise <= 0) {
+    throw new RazorpayError(`Refusing to refund ${amountPaise} paise`, { status: 0 });
+  }
+
+  return razorpayRequest<RazorpayRefund>(
+    `/payments/${encodeURIComponent(paymentId)}/refund`,
+    {
+      method: "POST",
+      body: {
+        amount: amountPaise,
+        speed: "normal",
+        receipt: refundId,
+        notes: { ...notes, [REFUND_REFERENCE_NOTE]: refundId },
+      },
+    },
+  );
+}
+
+export async function fetchRefund(refundId: string): Promise<RazorpayRefund> {
+  return razorpayRequest<RazorpayRefund>(`/refunds/${encodeURIComponent(refundId)}`, {
+    method: "GET",
+  });
+}
+
+/**
+ * Has this refund already been submitted?
+ *
+ * The question a retry has to answer before it does anything, and it cannot be
+ * answered from our own rows: the case that matters is precisely the one where
+ * Razorpay accepted a refund and we never recorded the id — a timeout, a
+ * function killed mid-call, a deploy landing between the POST and the write.
+ * Our row says "not submitted" and Razorpay says otherwise, so Razorpay is
+ * asked.
+ *
+ * `notes` survives on the refund entity, so the match is exact rather than
+ * heuristic. Matching on amount would be a guess, and on a job that was split
+ * and later refunded again it would be the wrong guess.
+ *
+ * Returns null when there is genuinely nothing there — which is the common
+ * answer, and the one that lets a submission go ahead.
+ */
+export async function findRefundByReference({
+  paymentId,
+  refundId,
+}: {
+  paymentId: string;
+  refundId: string;
+}): Promise<RazorpayRefund | null> {
+  const page = await razorpayRequest<{ count: number; items: RazorpayRefund[] }>(
+    `/payments/${encodeURIComponent(paymentId)}/refunds?count=100`,
+    { method: "GET" },
+  );
+
+  return (
+    page.items?.find((refund) => refund.notes?.[REFUND_REFERENCE_NOTE] === refundId) ?? null
+  );
 }
 
 /**
