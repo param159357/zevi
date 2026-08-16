@@ -101,8 +101,8 @@ npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 npx supabase db push   # apply new migrations to the linked project
 npx supabase gen types typescript --project-id vsqqrbodwrvjuclqhean > src/types/database.types.ts
 
-# The auto-accept sweep. Vercel Cron calls this hourly in production; nothing
-# calls it locally, so a delivery past its window sits there until you do.
+# The auto-accept sweep. Hourly in production; nothing calls it locally, so a
+# delivery past its window sits there until you do.
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/auto-accept
 
 # The payout run — expires matured holds, then builds the batch for whichever
@@ -123,6 +123,13 @@ curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/emai
 # and claiming would spend every row's attempts against a gateway that was never
 # there.
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/refunds
+
+# Only the payout run is a Vercel cron. The deployment is on the Hobby plan,
+# which rejects any schedule that fires more than once a day *at deploy time* —
+# so the hourly, ten-minute and fifteen-minute jobs above are driven by an
+# external caller instead. All four routes authenticate on the bearer token
+# alone (constant-time, no Vercel-specific signature), so an external scheduler
+# is indistinguishable from Vercel Cron to them. See docs/deployment.md §6.
 
 # SES domain setup — the identity, Easy DKIM, the custom MAIL FROM that makes
 # SPF align, and the DNS records to publish. Node runs the TypeScript directly.
