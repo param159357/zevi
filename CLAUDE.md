@@ -48,6 +48,12 @@ which freezes escrow, stops the auto-accept clock and puts the case in front of
 the console with both statements on it — so the queue spec §7 built is no longer
 correct and empty, it is correct and reachable.
 
+And the platform can now speak to people who are not looking at it. Amazon SES
+is wired — signed by hand, no SDK — behind the outbox migration 0017 built:
+thirteen templates covering spec §15's essential events, queued by the actions
+that already existed, drained by a cron, with the SPF and DKIM setup that spec
+§15 insists on from day one scripted and written down.
+
 Nothing beyond that: no chat, no ratings — and **money still cannot leave the
 platform account**. The batch assembles and stops: the disbursement step that
 turns a `payouts` row into a bank transfer, writes `payout_paid` to the ledger
@@ -55,8 +61,9 @@ and handles a failure is not built. That is still the single thing standing
 between this and a worker holding the money, and it is equally what stands
 between a decided dispute or a cancellation and the client's refund: both move
 the worker's share through the ledger and leave the client's as a `pending`
-refund row, because Razorpay's refund API is unwired too. SES, Sentry and SMS
-are unwired, and uploads sit in Supabase Storage until R2 replaces it.
+refund row, because Razorpay's refund API is unwired too. Sentry and SMS are
+unwired, SES cannot yet hear about a bounce, and uploads sit in Supabase Storage
+until R2 replaces it.
 
 ---
 
@@ -68,7 +75,7 @@ npm run build    # production build
 npm run start    # serve the production build
 npm run lint     # eslint
 npm test         # vitest — commission, payment signatures, payout calendar, KYC
-                 # names, cancellation tiers
+                 # names, cancellation tiers, SigV4 vectors, email templates
 npx tsc --noEmit # typecheck — CI gate, run before calling anything done
 
 npx supabase db push   # apply new migrations to the linked project
@@ -84,11 +91,24 @@ curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/auto
 # built and says so.
 curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/payouts
 
+# The outbox drain. Every ten minutes in production; nothing calls it locally,
+# so queued mail sits in `email_outbox` until you do. Without SES configured it
+# prints each message to the server console instead of sending it.
+curl -H "Authorization: Bearer $CRON_SECRET" http://localhost:3000/api/cron/email
+
+# SES domain setup — the identity, Easy DKIM, the custom MAIL FROM that makes
+# SPF align, and the DNS records to publish. Node runs the TypeScript directly.
+node scripts/ses-domain.ts setup zevi.in
+node scripts/ses-domain.ts status zevi.in
+
 # plpgsql_check against the linked project. Run it after any new function that
 # writes money — it catches the ambiguous-column class of bug that `db push`
 # accepts happily and that only fails at runtime, on the money path. See 0032.
 npx supabase db lint --linked --level warning
 ```
+
+Every essential email, rendered from its sample payload, is on `/dev/emails`
+under `npm run dev`. That route 404s in production.
 
 **The terminal here is PowerShell** (Windows PowerShell 5.1). Chain commands with
 `;`, never `&&` or `||` — those are parser errors, not just unsupported. No
@@ -133,7 +153,7 @@ actorId } : {})` — and let the function's own `default null` apply.
 | Files | Cloudflare R2 | not wired up |
 | Watermarks | `sharp` (raster) · `pdf-lib` (PDF) | delivery previews, generated server-side |
 | Payments | Razorpay | charge + escrow wired; Route transfers need KYC |
-| Email | Amazon SES | not wired up |
+| Email | Amazon SES | SESv2 over `fetch`, signed by hand — no SDK |
 | Errors | Sentry | not wired up |
 | Hosting | Vercel + Cloudflare | |
 
@@ -153,6 +173,8 @@ src/
 │   ├── (worker)/        workers: feed, opt-in, deliver, earnings, KYC
 │   ├── (shared)/        screens both sides of a job open: the dispute case
 │   ├── (admin)/         work queue: approvals, KYC, disputes, payouts, users
+│   ├── (dev)/           development-only screens — /dev/emails, which 404s in
+│   │                    production and reads nothing but the sample payloads
 │   ├── auth/callback/   where the email confirmation link lands
 │   ├── api/             route handlers — webhooks (Razorpay), cron, uploads
 │   ├── layout.tsx       root layout
@@ -177,6 +199,10 @@ src/
 │   ├── cancellations/   spec §5's tiers: tiers (the calculator) · actions · queries · types
 │   ├── disputes/        raising and answering one: actions · queries · validation · types
 │   ├── kyc/             identity before the first payout: actions · queries · razorpay · names · hash · validation · types
+│   ├── email/           spec §15: sigv4 · ses · send (the seam) · document ·
+│   │                    render · template · templates/ (the thirteen) ·
+│   │                    samples · outbox (queue + drain) · events (the call
+│   │                    sites) · links
 │   ├── uploads/         client.ts (browser hashing, object naming) · sign.ts (service-role signed URLs)
 │   ├── sms/             OTP delivery seam — no provider wired yet
 │   ├── constants/       commission slabs, deadline caps, fee amounts, limits
@@ -185,6 +211,9 @@ src/
 ├── hooks/               shared React hooks
 ├── types/               database.types.ts (generated) + shared domain types
 └── middleware.ts        session refresh + signed-in-only redirects
+
+docs/                    runbooks — email-setup.md (SPF, DKIM, the sandbox)
+scripts/                 ops scripts, run by node directly: ses-domain.ts
 
 supabase/
 └── migrations/          SQL migrations, checked in, forward-only
@@ -249,7 +278,7 @@ Rules:
 
 ### Schema
 
-36 migrations, 81 tables, RLS on every one. What to know before writing a query:
+37 migrations, 81 tables, RLS on every one. What to know before writing a query:
 
 - **`profiles` is PII and no policy exposes it to another *user*.** What others
   may see lives in `public_profiles` (a trigger-maintained projection),
@@ -947,6 +976,105 @@ post_delivery    refused: accept, revise, or dispute
   worker walking away is spec §6's abandonment, which carries a rating delta, a
   debit and a next-job cap that nothing computes yet. A worker who wants out
   raises a dispute, which is the door spec §11 gives them.
+
+---
+
+## Email
+
+Spec §15, and the first thing on this platform that reaches somebody who is not
+looking at it.
+
+```
+queueEmail()        one row in email_outbox + one notification, in one txn
+   ↓
+claim_email_batch() the drain's claim, attempt counted before SES is called
+   ↓
+deliverEmail()      SES v2 SendEmail, SigV4-signed over fetch
+   ↓
+mark_email_sent() · mark_email_failed()
+   ·
+/api/cron/email     every ten minutes
+```
+
+- **Nothing sends inline.** Every event queues a row and returns. A client
+  pressing "accept" waits on our database and on nothing else, and Amazon
+  throttling for an hour costs a delayed receipt rather than a failed
+  acceptance. That is what migration 0017 built the outbox for and 0037 made
+  move.
+- **`queueEmail` cannot fail its caller.** It is called from money paths that
+  have already committed — there is no version of "the receipt could not be
+  queued" that should unwind an acceptance. Every failure is caught and logged;
+  the one thing that is not swallowed is a payload that does not match its
+  template, which throws at the call site in development rather than three
+  weeks later in a drain nobody watches.
+- **The email and the in-site notification are written together**, in
+  `enqueue_email()`, because 0017 asked for exactly that: notifications are
+  written by the same code that sends the emails, and adding the write later
+  means revisiting every call site. The centre is still out of V1; the rows are
+  not.
+- **Deduplication is the `dedupe_key`, and it is what the column was for.** The
+  browser and the Razorpay webhook both settle a payment, in either order, and
+  exactly one receipt goes out. Same mechanism keeps the ninth worker opting in
+  from sending a ninth "you have workers" email.
+- **A template returns a document, not a string.** One structure, two renderers,
+  so the `text/plain` part cannot drift from the HTML — and a message with no
+  text part is scored down by every spam filter that looks, which is the thing
+  spec §15 is warning about. `action` is a single optional field rather than a
+  list, so "one action each" is a shape rather than a rule to remember.
+- **Thirteen templates for fifteen bullets**, and both gaps are decisions.
+  **Verify email** is Supabase Auth's message, not one we compose — the way it
+  gets our SPF and DKIM is Supabase custom SMTP pointed at SES, which is in
+  `docs/email-setup.md`. **Worker assigned** is the same instant as **payment
+  received**: 0029 settles the capture, the escrow hold, the ledger and the
+  assignment in one transaction, so the second email would arrive in the same
+  second saying less. Three more — `refund_issued`, `payout_sent`,
+  `penalty_notice` — are written and tested with **no caller**, because the
+  money paths behind them are the ones that do not exist yet. They are the
+  copy those steps will not have to invent, not dead code.
+- **The payload is validated on the way back out.** It is written as JSON by one
+  deploy and read by another, which makes it an external input by the time the
+  drain sees it. Each template declares its fields once and TypeScript infers
+  the payload type from that declaration, so the enqueue call sites are checked
+  against the same thing `parsePayload` enforces at run time.
+- **Reminders are swept, not scheduled.** Spec §5's 12h/30h and 24h/60h are a
+  third and five sixths of whichever window the delivery was given, and the
+  hourly auto-accept cron sends them by reading the live rows. Queueing two
+  future-dated emails at delivery would need every path that ends the review
+  early — acceptance, a revision, a dispute, a cancellation — to remember to
+  cancel them, and a missed cancellation is an email telling a client to review
+  something they already accepted.
+- **No SDK, and the signer is tested against Amazon's own vectors.**
+  `@aws-sdk/client-sesv2` brings a credential chain, a retry engine and an HTTP
+  stack to sign one POST. `sigv4.ts` is seventy lines checked against the
+  published `aws-sig-v4-test-suite` cases and the worked IAM example — somebody
+  else's arithmetic, which is the only kind worth testing crypto against.
+- **A dispute email never carries the decision note.** Spec §7 makes that note
+  mandatory and internal. What goes out is that a decision was made, and a link
+  to the case, which shows each side its own outcome. The one quoted thing is
+  the summary the raiser wrote, and only to the other party on the way in.
+- **`SES_*`, not `AWS_*`.** A Vercel function runs on Lambda, whose runtime sets
+  `AWS_REGION` and both `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` for its own
+  execution role. Ours would be shadowed in some contexts and not others.
+- **Unconfigured is loud, not silent.** Development prints each message to the
+  server console and reports a `dev-` message id; production throws
+  non-retryably and the row lands in `failed` with the reason on it. Nothing is
+  ever dropped quietly — spec §15's failure mode is users never hearing from
+  you, and a queue that swallows everything is that failure mode with extra
+  steps.
+- **Bounces and complaints are not wired.** SES reports them asynchronously to
+  an SNS topic nothing here subscribes to, which is why `email_status` has
+  `bounced` and `complained` values nothing sets and why
+  `provider_message_id` is recorded on every sent row. A 5% bounce rate gets an
+  account suspended, so this is the next thing to build in the module.
+- **0037's four functions were added to `src/types/database.types.ts` by hand**,
+  so the build typechecks before the migration has been pushed. Run
+  `npx supabase db push`, then `db lint --linked`, then regenerate the types
+  (from Git Bash — see above) and the file should come back byte-identical.
+- **SPF and DKIM are DNS, not code.** `scripts/ses-domain.ts` does the half that
+  lives in Amazon — the identity, Easy DKIM, and the custom MAIL FROM subdomain
+  that makes SPF *align* rather than merely pass — and prints the records for a
+  human to publish. `docs/email-setup.md` is the runbook, including why the
+  apex SPF record is the wrong place for `include:amazonses.com`.
 
 ## Money
 

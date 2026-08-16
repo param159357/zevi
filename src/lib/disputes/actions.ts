@@ -28,6 +28,7 @@ import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
 import type { OpenDisputeResult, RespondResult } from "@/lib/disputes/types";
 import { parseDisputeReason, parseStatement } from "@/lib/disputes/validation";
+import { notifyDisputeUpdate } from "@/lib/email/events";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 
 const UUID_PATTERN =
@@ -104,6 +105,9 @@ export async function raiseDispute(input: {
     throw new Error(`open_dispute reported success on ${input.jobId} with no case id`);
   }
 
+  // The other side only: whoever filled this form in knows what they wrote.
+  await notifyDisputeUpdate({ disputeId: data.dispute_id, stage: "raised" });
+
   revalidatePath(JOB_ROUTES.dashboard);
   revalidatePath(JOB_ROUTES.review(input.jobId));
   revalidatePath(WORKER_ROUTES.work);
@@ -168,6 +172,8 @@ export async function respondToDispute(input: {
     default:
       throw new Error(`respond_to_dispute returned ${data.status}`);
   }
+
+  await notifyDisputeUpdate({ disputeId: input.disputeId, stage: "response" });
 
   revalidatePath(DISPUTE_ROUTES.case(input.disputeId));
 

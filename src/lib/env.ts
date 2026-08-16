@@ -109,6 +109,24 @@ export function isPanVerificationConfigured(): boolean {
 }
 
 /**
+ * True when SES can actually send (spec §15).
+ *
+ * Read by `lib/email/send.ts`, which prints to the console in development and
+ * refuses in production rather than dropping a receipt on the floor. Deliberately
+ * *not* read by anything that enqueues: an email nobody can send yet still
+ * belongs in the outbox, where it is visible and can go out once the domain is
+ * verified. Silence is the failure mode spec §15 is warning about.
+ */
+export function isEmailConfigured(): boolean {
+  return Boolean(
+    process.env.SES_REGION &&
+      process.env.SES_ACCESS_KEY_ID &&
+      process.env.SES_SECRET_ACCESS_KEY &&
+      process.env.SES_FROM_ADDRESS,
+  );
+}
+
+/**
  * Server-only. Importing this from a Client Component leaks secrets into the
  * browser bundle — don't.
  */
@@ -190,5 +208,42 @@ export const serverEnv = {
    */
   get kycHashPepper() {
     return required("KYC_HASH_PEPPER", process.env.KYC_HASH_PEPPER);
+  },
+
+  /**
+   * The SES region — and note the names: `SES_*`, not `AWS_*`.
+   *
+   * Two reasons. A Vercel function runs on Lambda, whose runtime sets
+   * `AWS_REGION`, `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for its own
+   * execution role; ours would be read in some contexts and quietly shadowed in
+   * others. And the credentials these name should belong to an IAM user holding
+   * `ses:SendEmail` and nothing else, so calling them "the AWS keys" describes a
+   * blast radius we do not want anyone to assume they have.
+   *
+   * SES is regional and an identity verified in one region is not verified in
+   * another, so this has to match wherever the domain was set up — `ap-south-1`
+   * for a platform whose users are all in India.
+   */
+  get sesRegion() {
+    return required("SES_REGION", process.env.SES_REGION);
+  },
+  get sesAccessKeyId() {
+    return required("SES_ACCESS_KEY_ID", process.env.SES_ACCESS_KEY_ID);
+  },
+  get sesSecretAccessKey() {
+    return required("SES_SECRET_ACCESS_KEY", process.env.SES_SECRET_ACCESS_KEY);
+  },
+  /**
+   * The From address, which must be an identity SES has verified — either the
+   * address itself or its domain. `Zevi <no-reply@zevi.in>` is accepted as well
+   * as a bare address; SES parses the display-name form.
+   *
+   * Sending from a domain whose DKIM records are not published is the specific
+   * way spec §15's warning comes true: SES accepts the message, the recipient's
+   * provider fails the DMARC check, and the mail is filed as spam without
+   * anybody being told.
+   */
+  get sesFromAddress() {
+    return required("SES_FROM_ADDRESS", process.env.SES_FROM_ADDRESS);
   },
 };

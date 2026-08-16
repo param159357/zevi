@@ -24,6 +24,7 @@ import { revalidatePath } from "next/cache";
 
 import { requireRole } from "@/lib/auth/session";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
+import { notifyShortlistReady } from "@/lib/email/events";
 import { loadMatchingSettings, loadOptInCapacity } from "@/lib/matching/queries";
 import type { OptInInput, OptInResult, SimpleResult } from "@/lib/matching/types";
 import { parseOptInFields } from "@/lib/matching/validation";
@@ -129,6 +130,10 @@ export async function optIntoJob(input: OptInInput): Promise<OptInResult> {
     }
     return { ok: false, error: describeWriteError(error) };
   }
+
+  // Spec §15's "shortlist ready", sent on the first opt-in and only the first:
+  // the dedupe key is the job, so the ninth worker to opt in sends nothing.
+  await notifyShortlistReady(input.jobId);
 
   revalidatePath(WORKER_ROUTES.feed);
   revalidatePath(WORKER_ROUTES.job(input.jobId));

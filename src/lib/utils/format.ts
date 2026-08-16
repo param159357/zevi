@@ -19,6 +19,23 @@ export function formatBytes(bytes: number): string {
   return `${rounded} ${BYTE_UNITS[unit]}`;
 }
 
+/**
+ * How a job is named to a person: the first eight characters of its id.
+ *
+ * Spec §15 wants the job ID in every subject line, and a full UUID in a subject
+ * line is 36 characters of noise that pushes the sentence off a phone screen.
+ * Eight hex characters are unambiguous across any number of jobs this platform
+ * will ever have, they are what the delivery watermark already stamps
+ * (`lib/deliveries/preview.ts`), and — the point — they are a prefix, so a
+ * client quoting one to support can be looked up with a `like`.
+ *
+ * Lower case, matching the watermark and the id itself. A reference a user
+ * retypes in a different case is the same reference; nothing compares these.
+ */
+export function jobReference(jobId: string): string {
+  return jobId.slice(0, 8);
+}
+
 const DATE = new Intl.DateTimeFormat("en-IN", {
   day: "numeric",
   month: "short",
@@ -51,6 +68,16 @@ export function formatDateShort(iso: string): string {
 
 export function formatTime(iso: string): string {
   return TIME.format(new Date(iso));
+}
+
+/**
+ * `Thu, 20 Aug at 6:30 pm` — a moment, named in full.
+ *
+ * For email, where there is no page around the date to say which month it is
+ * and no tooltip to hover. Everything is IST, like every other date here.
+ */
+export function formatWhen(iso: string): string {
+  return `${DATE_SHORT.format(new Date(iso))} at ${TIME.format(new Date(iso))}`;
 }
 
 /** How long until a deadline, in whole days. Negative once it has passed. */

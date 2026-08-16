@@ -19,6 +19,7 @@ import { revalidatePath } from "next/cache";
 
 import { JOB_ROUTES } from "@/lib/constants/jobs";
 import { WORKER_ROUTES } from "@/lib/constants/workers";
+import { notifyJobAssigned } from "@/lib/email/events";
 import {
   RazorpayError,
   capturePayment,
@@ -174,6 +175,12 @@ export async function settleCapturedPayment({
       retryable: false,
     };
   }
+
+  // The receipt and the worker's "you've been picked". Both keyed on the job,
+  // so the browser and the webhook arriving in either order send one of each.
+  // It cannot throw, and it is awaited rather than left dangling: a serverless
+  // function that has returned its response may be frozen mid-promise.
+  await notifyJobAssigned(jobId);
 
   revalidatePath(JOB_ROUTES.dashboard);
   revalidatePath(JOB_ROUTES.shortlist(jobId));

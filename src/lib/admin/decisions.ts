@@ -44,6 +44,7 @@ import {
   isSanctionType,
 } from "@/lib/admin/types";
 import { ADMIN_ROUTES } from "@/lib/constants/workers";
+import { notifyDisputeUpdate } from "@/lib/email/events";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { parseIpAddress } from "@/lib/utils/validation";
 
@@ -164,6 +165,11 @@ export async function resolveDispute(
     default:
       throw new Error(`resolve_dispute returned ${data.status}`);
   }
+
+  // Both sides, before the redirect throws. The decision note is not carried:
+  // spec §7 makes it mandatory and internal, and the case screen shows each
+  // party their own outcome.
+  await notifyDisputeUpdate({ disputeId, stage: "resolved" });
 
   revalidatePath(ADMIN_ROUTES.disputes);
   revalidatePath(ADMIN_ROUTES.dispute(disputeId));

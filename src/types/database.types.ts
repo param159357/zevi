@@ -5059,6 +5059,17 @@ export type Database = {
           isSetofReturn: false
         }
       }
+      claim_email_batch: {
+        Args: { p_limit?: number }
+        Returns: {
+          attempts: number
+          id: string
+          payload: Json
+          subject: string
+          template: string
+          to_email: string
+        }[]
+      }
       claim_job_assignment: {
         Args: {
           p_job_id: string
@@ -5086,6 +5097,22 @@ export type Database = {
           isOneToOne: true
           isSetofReturn: false
         }
+      }
+      enqueue_email: {
+        Args: {
+          p_action_url?: string
+          p_dedupe_key?: string
+          p_job_id?: string
+          p_notification_body?: string
+          p_notification_title?: string
+          p_notification_type?: Database["public"]["Enums"]["notification_type"]
+          p_payload: Json
+          p_profile_id: string
+          p_scheduled_for?: string
+          p_subject: string
+          p_template: string
+        }
+        Returns: string
       }
       ensure_worker_ledger_account: {
         Args: { p_worker_id: string }
@@ -5149,6 +5176,14 @@ export type Database = {
           detail: string
           status: string
         }[]
+      }
+      mark_email_failed: {
+        Args: { p_error: string; p_id: string; p_retry_at?: string }
+        Returns: string
+      }
+      mark_email_sent: {
+        Args: { p_id: string; p_message_id: string }
+        Returns: undefined
       }
       max_deadline_days: { Args: { budget_paise: number }; Returns: number }
       open_dispute: {

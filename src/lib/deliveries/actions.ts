@@ -52,6 +52,11 @@ import type {
   SubmitDeliveryResult,
 } from "@/lib/deliveries/types";
 import { parseDeliveryNote, parseRevisionReason } from "@/lib/deliveries/validation";
+import {
+  notifyJobCompleted,
+  notifyRevisionRequested,
+  notifyWorkDelivered,
+} from "@/lib/email/events";
 import { createClient, createServiceRoleClient } from "@/lib/supabase/server";
 import { formatBytes } from "@/lib/utils/format";
 
@@ -492,6 +497,13 @@ export async function submitDelivery(input: {
     };
   }
 
+  await notifyWorkDelivered({
+    jobId: input.jobId,
+    deliveryId: delivery.id,
+    autoAcceptAt: delivery.auto_accept_at,
+    fileCount: fileIds.length,
+  });
+
   revalidatePath(WORKER_ROUTES.work);
   revalidatePath(WORKER_ROUTES.deliver(input.jobId));
   revalidatePath(JOB_ROUTES.dashboard);
@@ -532,6 +544,10 @@ export async function acceptDelivery(deliveryId: string): Promise<SimpleResult> 
         : "We couldn't accept that. Try again.",
     };
   }
+
+  // Spec §12 removes the files seven days after this moment, so the email that
+  // says "download your copy" is the one that must not be skipped.
+  await notifyJobCompleted({ jobId: accepted.job_id, autoAccepted: false });
 
   revalidatePath(JOB_ROUTES.dashboard);
   revalidatePath(JOB_ROUTES.review(accepted.job_id));
@@ -578,6 +594,12 @@ export async function requestRevision(input: {
         : "We couldn't send that. Try again.",
     };
   }
+
+  await notifyRevisionRequested({
+    jobId: revision.job_id,
+    deliveryId: input.deliveryId,
+    reason: reason.value,
+  });
 
   revalidatePath(JOB_ROUTES.dashboard);
   revalidatePath(JOB_ROUTES.review(revision.job_id));

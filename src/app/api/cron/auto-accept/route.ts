@@ -3,6 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { AUTO_ACCEPT_SWEEP_LIMIT } from "@/lib/constants/deliveries";
+import { sendAutoAcceptReminders } from "@/lib/deliveries/reminders";
+import { notifyJobCompleted } from "@/lib/email/events";
 import { serverEnv } from "@/lib/env";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 
@@ -28,9 +30,12 @@ import { createServiceRoleClient } from "@/lib/supabase/server";
  * bad happens if it runs more often, or twice at once — the row lock and the
  * `already accepted` early return handle both.
  *
- * What this does NOT do is send the reminders spec §5 asks for at 12h/30h and
- * 24h/60h. There is no email provider wired up, and `reminder_1_sent_at` is
- * left null rather than stamped for a message nobody sent.
+ * It also sends spec §5's reminders, at 12h/30h and 24h/60h — a third and five
+ * sixths of whichever window the delivery was given. They belong on this
+ * schedule rather than on their own because they are the same rows an hour
+ * earlier in their life, and because reading the live rows is what keeps a
+ * reminder from outliving the acceptance that made it wrong. See
+ * `lib/deliveries/reminders.ts`.
  */
 
 export const dynamic = "force-dynamic";
@@ -90,11 +95,32 @@ export async function GET(request: Request): Promise<NextResponse> {
     console.log(`[auto-accept] accepted ${accepted.length} delivery(s)`);
   }
 
+  // A client whose window ran out is the one who most needs telling: they did
+  // not press anything, and spec §12 removes the files seven days from now.
+  for (const row of accepted) {
+    await notifyJobCompleted({ jobId: row.job_id, autoAccepted: true });
+  }
+
+  // After the sweep, not before: a delivery whose window has just expired has
+  // been accepted by the loop above and is no longer `pending_review`, so it
+  // cannot be reminded about a decision it no longer has.
+  const reminders = await sendAutoAcceptReminders();
+
+  if (reminders.queued > 0) {
+    console.log(`[auto-accept] queued ${reminders.queued} review reminder(s)`);
+  }
+
   // 200 even with failures: the sweep itself ran. A non-2xx would say the run
   // needs retrying, and re-running it will fail on the same rows in the same
   // way — they need a person, not another attempt.
   return NextResponse.json(
-    { ok: true, swept: results.length, accepted: accepted.length, failed: failed.length },
+    {
+      ok: true,
+      swept: results.length,
+      accepted: accepted.length,
+      failed: failed.length,
+      remindersQueued: reminders.queued,
+    },
     { status: 200 },
   );
 }

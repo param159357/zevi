@@ -25,6 +25,7 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/admin/session";
 import { type ReviewFormState, isReviewDecision } from "@/lib/admin/types";
 import { ADMIN_ROUTES, WORKER_ROUTES } from "@/lib/constants/workers";
+import { notifyApplicationReviewed } from "@/lib/email/events";
 import { type KycReviewFormState, isKycReviewDecision } from "@/lib/kyc/types";
 import { createServiceRoleClient } from "@/lib/supabase/server";
 import { parseIpAddress } from "@/lib/utils/validation";
@@ -101,6 +102,15 @@ export async function reviewWorkerApplication(
     default:
       throw new Error(`review_worker_application returned ${data.status}`);
   }
+
+  // Before the redirect, which throws. `reason` is what the worker is shown on
+  // a rejection — the internal note is not sent anywhere.
+  await notifyApplicationReviewed({
+    applicationId,
+    workerId: data.worker_id,
+    decision,
+    reason,
+  });
 
   revalidatePath(ADMIN_ROUTES.approvals);
   revalidatePath(WORKER_ROUTES.samples);

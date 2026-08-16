@@ -11,6 +11,10 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // For `scripts/`, which Node runs directly (it strips types natively since
+    // 23.6) and which therefore has to import with the real `.ts` extension.
+    // Safe alongside `noEmit`, and nothing under `src/` uses it.
+    "allowImportingTsExtensions": true,
     "jsx": "preserve",
     "incremental": true,
     "plugins": [
