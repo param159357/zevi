@@ -6,7 +6,9 @@ this file covers how the code is built.
 **Status: a job runs end to end, and money can now go back to a client.**
 The app scaffold, Supabase clients, folder structure and the full database schema
 are in place and pushed. Signup and login work end to end for both sides — email
-verified through Supabase, mobile through our own OTP. A client can post a job:
+verified through Supabase, mobile through our own OTP, and a forgotten password
+recoverable through a link that only the browser which asked for it can spend. A
+client can post a job:
 category tiles, brief, attachments, budget and deadline, autosaved as a draft and
 published through `publish_job()`. A worker can add 3–6 samples per category with
 captions and submit them, and an admin can approve, flag or reject from the
@@ -208,7 +210,7 @@ Tailwind v4 has no config file by design — theme tokens live in `@theme` insid
 src/
 ├── app/
 │   ├── (marketing)/     public pages — landing, legal, category browse
-│   ├── (auth)/          signup, login, the two verification steps
+│   ├── (auth)/          signup, login, the two verification steps, password reset
 │   ├── (client)/        job posters: post, shortlist, review, dashboard, cancel
 │   ├── (worker)/        workers: feed, opt-in, deliver, earnings, KYC
 │   ├── (shared)/        screens both sides of a job open: the dispute case
@@ -491,8 +493,42 @@ verify_email → verify_mobile → choose_role → complete
 - Guards in layouts, not just middleware. `requireRole()` re-checks server-side;
   middleware only spares signed-out visitors a wasted render.
 
-Two things still missing, deliberately: **no SMS provider** (development prints
-the code to the console, production refuses to send) and **no password reset**.
+**Password reset is Supabase Auth's message too**, for the reason the
+confirmation link is: the token is GoTrue's to mint, so there is no fourteenth
+outbox template and `docs/email-setup.md` §8 is how it gets our SPF and DKIM. One
+flow serves both sides — the account is one `profiles` row either way, and where
+someone lands afterwards is `destinationFor()`'s decision, not the screen's.
+
+- **A recovery session is an ordinary session, and that is the whole problem.**
+  Supabase does not mark it, so `/reset-password` would otherwise be a
+  set-a-password-without-the-old-one door on *every* signed-in session — borrow
+  an unlocked laptop, keep the account. `PASSWORD_RECOVERY_COOKIE` is the marker
+  `/auth/callback` writes **only after an exchange succeeds**, so it cannot be
+  forged by navigating to the screen, and `setNewPassword()` spends it. The page
+  checks it too, because a rendered form is not access control.
+- **The callback tells a reset from a confirmation two ways**, because the two
+  link shapes carry different evidence. `type=recovery` is authoritative and
+  arrives with `token_hash`; the PKCE shape carries nothing but a code, so
+  `requestPasswordReset()` says so in `next` — and only `/reset-password` is
+  honoured there, so it stays a yes/no question rather than becoming a general
+  redirect parameter.
+- **A failed recovery exchange goes to `/forgot-password`, not to `/login`.**
+  Same branch, opposite advice: the login screen would be asking for the password
+  they came to replace.
+- **The reset signs other sessions out** (`scope: "others"`), because someone
+  resetting a password is often resetting it *because* somebody else has it.
+  This browser keeps the session it just proved.
+- **Enumeration**: an address with no account gets the same screen as one with,
+  and the copy says "if that address has an account" so that screen is true
+  either way. `user_not_found` is swallowed for the same reason `signUp` swallows
+  `user_already_exists`.
+- A signed-in caller is **not** bounced off `/forgot-password`. There is no
+  change-password screen inside the product, and an inbox round trip is the right
+  proof for a password change anyway — so this doubles as that path until one
+  exists.
+
+One thing still missing, deliberately: **no SMS provider** (development prints
+the code to the console, production refuses to send).
 
 The project has no custom SMTP either, so Supabase's built-in sender applies its
 own low hourly limit — fine for development, not for launch.

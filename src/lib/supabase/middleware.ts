@@ -11,7 +11,10 @@ import type { Database } from "@/types/database.types";
  * decides what any query can actually see.
  *
  * `/verify/email` is deliberately absent — email is confirmed before Supabase
- * issues a session, so that screen has to work signed out.
+ * issues a session, so that screen has to work signed out. So is
+ * `/reset-password`, for a related reason: someone arriving on a stale recovery
+ * link needs to be told the link is stale, not sent to a login screen asking for
+ * the password they came to replace. That page makes its own check.
  */
 const SIGNED_IN_ONLY = [
   "/dashboard",

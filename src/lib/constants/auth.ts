@@ -33,6 +33,19 @@ export const NON_WORKER_CATEGORY_SLUGS = ["other"];
 export const PENDING_EMAIL_COOKIE = "zevi_pending_email";
 export const PENDING_EMAIL_COOKIE_MAX_AGE = 60 * 30;
 
+/**
+ * Says the session in this browser arrived through a recovery link, and is
+ * therefore allowed to set a password without being asked for the old one.
+ *
+ * A recovery session is an ordinary session — Supabase does not mark it — so
+ * without this the reset screen would be a door on every signed-in session:
+ * borrow an unlocked laptop, set a new password, keep the account. The callback
+ * writes it only after an exchange succeeds, so it cannot be forged by
+ * navigating to the reset screen, and `setNewPassword` spends it.
+ */
+export const PASSWORD_RECOVERY_COOKIE = "zevi_password_recovery";
+export const PASSWORD_RECOVERY_COOKIE_MAX_AGE = 60 * 30;
+
 export const AUTH_ROUTES = {
   login: "/login",
   signup: "/signup",
@@ -41,6 +54,8 @@ export const AUTH_ROUTES = {
   workerCategories: "/signup/worker/categories",
   verifyEmail: "/verify/email",
   verifyMobile: "/verify/mobile",
+  forgotPassword: "/forgot-password",
+  resetPassword: "/reset-password",
   callback: "/auth/callback",
   clientHome: "/dashboard",
   workerHome: "/worker",

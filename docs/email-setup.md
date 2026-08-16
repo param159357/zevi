@@ -253,14 +253,15 @@ Nothing arriving means the subscription is unconfirmed, `SES_CONFIGURATION_SET`
 is unset, or the endpoint is returning non-2xx — the Vercel logs say which, and
 every refusal is logged with `[ses-webhook]`.
 
-## 8. The verification email is Supabase's — point it at SES too
+## 8. Two emails are Supabase's — point them at SES too
 
-Signup confirmation is sent by Supabase Auth, not by this codebase (see the note
-at the top of `src/lib/email/templates/client.ts`). Left alone it goes out
-through Supabase's built-in sender, from *their* domain, with a low hourly limit
-that is fine for development and not for launch.
+Signup confirmation and password reset are sent by Supabase Auth, not by this
+codebase (see the note at the top of `src/lib/email/templates/client.ts`). The
+token in each is GoTrue's to mint, so neither is a template in `lib/email`. Left
+alone they go out through Supabase's built-in sender, from *their* domain, with a
+low hourly limit that is fine for development and not for launch.
 
-To bring it under the same SPF and DKIM as everything else:
+To bring them under the same SPF and DKIM as everything else:
 
 1. SES console → SMTP settings → **Create SMTP credentials**. This makes its own
    IAM user; it is not the same key pair as above.
@@ -273,6 +274,31 @@ To bring it under the same SPF and DKIM as everything else:
    want it to match the rest — run the dev server and open
    `http://localhost:3000/dev/emails` to see what the rest looks like, and keep
    Supabase's `{{ .ConfirmationURL }}` placeholder as the link.
+
+Both templates also need `/auth/callback` on the redirect allow list — Supabase →
+Authentication → URL Configuration. Without it Supabase silently falls back to
+the Site URL and every link lands on the home page.
+
+### 8.1 Making a reset link work on a second device
+
+Out of the box `{{ .ConfirmationURL }}` sends the PKCE shape: the link carries a
+`code`, and exchanging it needs the verifier cookie that `resetPasswordForEmail`
+left in the browser that asked. Open the mail on a phone and the exchange fails —
+`/auth/callback` catches that and returns the person to `/forgot-password` with a
+"open it in this browser" notice, which is honest but is still a dead end for
+anyone who reads mail on a different device from the one they browse on.
+
+The fix is a template change, not a code change. Supabase → Authentication →
+Email Templates → **Reset Password**, and swap the link for the token-hash form:
+
+```
+{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=recovery
+```
+
+`/auth/callback` already handles that shape, and `type=recovery` is a stronger
+signal than the `next` parameter the PKCE shape relies on — no verifier cookie is
+involved, so the link works anywhere. Do the same on **Confirm signup** with
+`type=signup` if the same complaint turns up there.
 
 ## 9. Prove it works
 

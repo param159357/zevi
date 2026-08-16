@@ -26,6 +26,7 @@ import {
   NON_WORKER_CATEGORY_SLUGS,
   OTP_LENGTH,
   OTP_RESEND_COOLDOWN_SECONDS,
+  PASSWORD_RECOVERY_COOKIE,
   PENDING_EMAIL_COOKIE,
   PENDING_EMAIL_COOKIE_MAX_AGE,
 } from "@/lib/constants/auth";
@@ -298,6 +299,127 @@ export async function logOut(): Promise<void> {
   const supabase = await createClient();
   await supabase.auth.signOut();
   redirect("/");
+}
+
+// ---------------------------------------------------------------------------
+// Password reset
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends the recovery link.
+ *
+ * The message is Supabase Auth's, not one we compose, for the same reason the
+ * confirmation email is (see `lib/email/templates/client.ts`): the token in it
+ * is GoTrue's to mint, and pointing Supabase's SMTP at SES puts it under the
+ * same SPF and DKIM as everything else. `docs/email-setup.md` §8 is the runbook.
+ *
+ * A signed-in caller is not turned away. There is no change-password screen
+ * inside the product, and an inbox round trip is the right proof for a password
+ * change anyway — so this doubles as that path until one exists.
+ */
+export async function requestPasswordReset(
+  _previous: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const email = parseEmail(formData.get("email"));
+  if (!email.ok) return fieldError("email", email.error);
+
+  // The address is the answer to "who asked?", so it goes back on the state and
+  // the screen can name it. `next` is what tells the callback this is a
+  // recovery: it decides which screen the link lands on and nothing else.
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email.value, {
+    redirectTo: `${getSiteUrl()}${AUTH_ROUTES.callback}?next=${encodeURIComponent(AUTH_ROUTES.resetPassword)}`,
+  });
+
+  // An address with no account gets the same screen as one with. Anything else
+  // is an enumeration oracle, and this form is open to the world — the copy on
+  // the screen says "if that address has an account" for the same reason.
+  if (error && error.code !== "user_not_found") {
+    return { status: "error", error: describeAuthError(error) };
+  }
+
+  return {
+    status: "sent",
+    notice: `If ${email.value} has an account, a link to set a new password is on its way.`,
+  };
+}
+
+/**
+ * Sets the new password, for a session that arrived through a recovery link.
+ *
+ * The marker cookie is the whole guard: Supabase hands back an ordinary session
+ * on a recovery exchange, so without it this action would change the password
+ * of whoever holds the session cookie, no old password asked for. See
+ * `PASSWORD_RECOVERY_COOKIE`.
+ */
+export async function setNewPassword(
+  _previous: FormState,
+  formData: FormData,
+): Promise<FormState> {
+  const store = await cookies();
+  const expired: FormState = {
+    status: "error",
+    error: "That reset link has expired. Ask for a fresh one and open it in this browser.",
+  };
+
+  if (!store.get(PASSWORD_RECOVERY_COOKIE)) return expired;
+
+  const password = parsePassword(formData.get("password"));
+  if (!password.ok) return fieldError("password", password.error);
+
+  // Typed twice because a mistyped password on this screen locks the account out
+  // of itself — there is no old password left to fall back on.
+  if (formData.get("confirmPassword") !== password.value) {
+    return fieldError("confirmPassword", "Those two don't match.");
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.updateUser({ password: password.value });
+
+  if (error) {
+    switch (error.code) {
+      case "same_password":
+        return fieldError("password", "That's the password you already have. Pick a different one.");
+      // The session went stale while the form was open, or the link was already
+      // spent. Either way there is nothing to do here but start again.
+      case "session_not_found":
+      case "session_expired":
+      case "reauthentication_needed":
+        return expired;
+      default:
+        return { status: "error", error: describeAuthError(error) };
+    }
+  }
+
+  // Spent. A second submission from a stale tab starts over rather than getting
+  // a free password change.
+  store.delete(PASSWORD_RECOVERY_COOKIE);
+
+  // Somebody resetting a password is often resetting it *because* someone else
+  // has it. Leaving the other sessions alive would hand the account back.
+  // 'others' deliberately: this browser keeps the session it just proved.
+  const { error: signOutError } = await supabase.auth.signOut({ scope: "others" });
+  if (signOutError) {
+    // The password has already changed, so there is nothing to unwind and
+    // failing the action now would tell the user something untrue.
+    console.error(`[auth] could not sign other sessions out: ${signOutError.message}`);
+  }
+
+  const profile = await loadProfile(supabase, data.user.id);
+
+  if (isBlockedProfile(profile)) {
+    await supabase.auth.signOut();
+    return { status: "error", error: blockedMessage(profile) };
+  }
+
+  redirect(
+    destinationFor(
+      resolveStep(data.user, profile),
+      profile,
+      readIntendedRole(data.user),
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
